@@ -1,20 +1,18 @@
-// Records Management module (AMS). Screens: Setup (Report Library, Office Setup). Other parts are added one at a time.
-// Designs approved 17 Oct 2026.
+// Records Management module (AMS). Built so far: Overview, Submission Monitor, Setup (Report Library, Office Setup).
+// Designs approved 17 Oct 2026. Receiving, Logbook, Records & Storage, Borrow Log and RCI Encoding come next.
 import { store, newId } from '../../js/store.js';
-import { ROLE_NAMES } from '../../js/seed.js';
-import { esc, pill, modal, toast, bottomBand, $, $$ } from '../../js/ui.js';
+import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { roleLine } from '../../js/views/admin.js';
+import { moduleFrame } from '../../js/frame.js';
 
 // Load this module's look once.
 if (!document.querySelector('link[data-rms]')) {
   const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = 'modules/rms/rms.css'; l.dataset.rms = '1'; document.head.appendChild(l);
 }
 
-const TABS = [
-  ['monitor', 'Submission Monitor', false], ['receiving', 'Receiving', false], ['logbook', 'Logbook', false],
-  ['records', 'Records &amp; Storage', false], ['borrow', 'Borrow Log', false], ['setup', 'Setup', true]
-];
 const FREQ = ['Monthly', 'Quarterly', 'Semi-annual', 'Annual', 'As needed'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const byName = (a, b) => a.name.localeCompare(b.name);
 const hasRole = (refs, ...r) => !!refs.me && (refs.me.data.roles || []).some((x) => r.includes(x));
 const by = (refs) => refs.me?.data.email || '';
@@ -22,9 +20,18 @@ const by = (refs) => refs.me?.data.email || '';
 /* ---------- who may do what ---------- */
 const canEditLibrary = (refs) => hasRole(refs, 'admin', 'osa');
 const seesAllTeams = (refs) => hasRole(refs, 'admin', 'sa', 'osa');
+// Team Staff (JO) only: Receiving, Records & Storage and Borrow Log.
+const jobOrderOnly = (refs) => !!refs.me && (refs.me.data.roles || []).length > 0 && refs.me.data.roles.every((r) => r === 'staff');
 function myTeams(refs) {
   if (seesAllTeams(refs)) return refs.teams.map((t) => t.id);
   return refs.me ? (refs.me.data.teamIds || []) : [];
+}
+// Municipalities this person may see (Team Members and Team Staff can be limited to ticked ones).
+function mayViewMun(refs, munId, teamId) {
+  if (seesAllTeams(refs)) return true;
+  const d = refs.me?.data; if (!d || !(d.teamIds || []).includes(teamId)) return false;
+  if ((d.roles || []).includes('atl')) return true;
+  return !(d.munIds || []).length || d.munIds.includes(munId);
 }
 // Office codes and reports per office: ATL and Team Members of that team (members may be limited to ticked municipalities), SA and Admin.
 function canEditMun(refs, munTeamId, munId) {
@@ -37,11 +44,64 @@ function canEditMun(refs, munTeamId, munId) {
 
 /* ---------- data ---------- */
 async function loadRms() {
-  const [reports, offices] = await Promise.all([store.list('rms_reports'), store.list('rms_offices')]);
-  return { reports: reports.map((r) => ({ id: r.id, ...r.data })), offices: offices.map((o) => ({ id: o.id, ...o.data })) };
+  const [reports, offices, items, settings] = await Promise.all([store.list('rms_reports'), store.list('rms_offices'), store.list('rms_items'), store.get('rms_settings', 'office')]);
+  const now = new Date();
+  return { reports: reports.map((r) => ({ id: r.id, ...r.data })), offices: offices.map((o) => ({ id: o.id, ...o.data })),
+    items: items.map((i) => ({ id: i.id, ...i.data })),
+    startPeriod: (settings && settings.data && settings.data.startPeriod) || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` };
 }
 const dueText = (r) => !r.due || r.due.kind === 'none' ? 'No set due date'
   : r.due.kind === 'after' ? `${r.due.days} days after the period ends` : `Day ${r.due.day} of the following period`;
+
+/* ---------- periods, due dates and status ---------- */
+// Reporting periods of a report in a year: monthly '2026-09', quarterly '2026-Q3', semi-annual '2026-H2', annual '2026'.
+function periodsOf(r, year) {
+  if (r.frequency === 'Monthly') return MONTHS.map((_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  if (r.frequency === 'Quarterly') return [1, 2, 3, 4].map((q) => `${year}-Q${q}`);
+  if (r.frequency === 'Semi-annual') return [`${year}-H1`, `${year}-H2`];
+  if (r.frequency === 'Annual') return [String(year)];
+  return [];
+}
+// [first month, last month] (1–12) and year of a period.
+function span(p) {
+  const y = +p.slice(0, 4), t = p.slice(5);
+  if (!t) return [y, 1, 12];
+  if (t[0] === 'Q') { const q = +t[1]; return [y, q * 3 - 2, q * 3]; }
+  if (t[0] === 'H') { const h = +t[1]; return [y, h * 6 - 5, h * 6]; }
+  return [y, +t, +t];
+}
+function periodLabel(p) {
+  const [y, a, b] = span(p);
+  if (a === b) return `${MONTHS_LONG[a - 1]} ${y}`;
+  const t = p.slice(5);
+  return t ? `${t[0] === 'Q' ? 'Q' + t[1] : (t[1] === '1' ? '1st Half' : '2nd Half')} ${y}` : `CY ${y}`;
+}
+const periodShort = (p) => { const [, a, b] = span(p); const t = p.slice(5); return a === b ? MONTHS[a - 1] : t ? (t[0] === 'Q' ? 'Q' + t[1] : 'H' + t[1]) : 'Year'; };
+function dueDate(r, p) {
+  if (!r.due || r.due.kind === 'none') return null;
+  const [y, , b] = span(p);
+  if (r.due.kind === 'after') { const end = new Date(y, b, 0); end.setDate(end.getDate() + r.due.days); end.setHours(23, 59, 59); return end; }
+  const d = new Date(y, b, Math.min(r.due.day, new Date(y, b + 1, 0).getDate())); d.setHours(23, 59, 59); return d;
+}
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const fmtDT = (d) => d ? new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+
+// Status of one office's report for one period:
+// untracked (before monitoring starts) · nodue · notdue · complete · late · incomplete · overdue
+function cellStatus(rms, office, r, p, now = new Date()) {
+  { const [y, , e] = span(p); if (`${y}-${String(e).padStart(2, '0')}` < rms.startPeriod) return { s: 'untracked' }; }
+  const got = rms.items.filter((i) => i.officeId === office.id && i.reportId === r.id && i.period === p).sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt)))[0];
+  const due = dueDate(r, p);
+  if (got) {
+    if (got.status === 'incomplete') return { s: 'incomplete', item: got, due };
+    return { s: due && new Date(got.receivedAt) > due ? 'late' : 'complete', item: got, due };
+  }
+  const [y, , b] = span(p);
+  if (!due) return { s: new Date(y, b, 0) < now ? 'nodue' : 'notdue', due };
+  return { s: now > due ? 'overdue' : 'notdue', due };
+}
+const MARK = { complete: '✓', late: 'L', incomplete: '½', overdue: '!', notdue: '·', untracked: '—', nodue: '·' };
+const STATUS_TEXT = { complete: 'Complete', late: 'Complete, received late', incomplete: 'Incomplete', overdue: 'Overdue', notdue: 'Not yet due', untracked: 'Before monitoring started', nodue: 'Not yet submitted (no set due date)' };
 
 // The auditees of a municipality (or the Province), in display order, each with its main office and any extra offices.
 function auditeesOf(refs, rms, scopeId) {
@@ -62,36 +122,192 @@ function auditeesOf(refs, rms, scopeId) {
     });
   return list;
 }
+// Province and municipalities this person may see, Province first.
+function scopesFor(refs) {
+  const teams = myTeams(refs);
+  const ok = (l) => teams.includes(l.data.teamId) && mayViewMun(refs, l.id, l.data.teamId);
+  const prov = refs.lgus.find((l) => l.data.kind === 'province' && ok(l));
+  const muns = refs.lgus.filter((l) => l.data.kind === 'municipality' && ok(l)).sort((a, b) => a.data.name.localeCompare(b.data.name));
+  return [...(prov ? [prov] : []), ...muns];
+}
+// All offices (with their display names) this person may see, in display order.
+function visibleOffices(refs, rms, scopeIds) {
+  return scopeIds.flatMap((sid) => auditeesOf(refs, rms, sid).flatMap((a) => [a.main ? { ...a.main, label: a.name, munId: sid } : null,
+    ...a.extra.filter((o) => o.active !== false).map((o) => ({ ...o, label: o.name + ' · ' + a.name, munId: sid }))]).filter(Boolean));
+}
+function overdueAll(refs, rms, year) {
+  const offs = visibleOffices(refs, rms, scopesFor(refs).map((s) => s.id));
+  const out = [];
+  rms.reports.filter((r) => r.active !== false).forEach((r) => periodsOf(r, year).forEach((p) => offs.forEach((o) => {
+    if ((o.reportIds || []).includes(r.id) && cellStatus(rms, o, r, p).s === 'overdue') out.push({ o, r, p });
+  })));
+  return out;
+}
 
 /* ---------- page frame ---------- */
-function frame(ctx, active, body) {
-  const { refs, session, syncHtml } = ctx;
-  const name = refs.me ? refs.me.data.name : (session.name || session.email);
-  const ini = String(name).split(/\s+/).filter((w) => /^[A-Z]/i.test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
-  return `<div class="topbar">
-      <img src="img/coa-logo.png" alt="COA seal">
-      <div class="t">RECORDS MANAGEMENT<small>AMS · COA QUIRINO</small></div>
-      <nav><a href="#/">← Dashboard</a></nav>
-      ${syncHtml}<div class="me"><div class="av">${esc(ini)}</div><span>${esc(name)}<br><small>${esc(roleLine(refs))}</small></span></div>
-    </div><div class="tri-bar"></div>
-    <div class="rms-subnav">${TABS.map(([k, label, ready]) => ready
-      ? `<a href="#/rms/${k}" class="${active === k ? 'on' : ''}">${label}</a>`
-      : `<a href="#" class="dim" data-soon="${label}">${label}</a>`).join('')}</div>
-    <main class="admin">${body}</main>${bottomBand()}`;
+function navItems(refs, overdueN) {
+  if (jobOrderOnly(refs)) return [
+    { key: 'receiving', label: 'Receiving', icon: 'inbox', soon: true },
+    { key: 'records', label: 'Records & Storage', icon: 'box', soon: true },
+    { key: 'borrow', label: 'Borrow Log', icon: 'swap', soon: true }];
+  return [
+    { key: 'overview', label: 'Overview', icon: 'overview', href: '#/rms/overview' },
+    { key: 'monitor', label: 'Submission Monitor', icon: 'grid', href: '#/rms/monitor', count: overdueN },
+    { key: 'receiving', label: 'Receiving', icon: 'inbox', soon: true },
+    { key: 'logbook', label: 'Logbook', icon: 'book', soon: true },
+    { key: 'records', label: 'Records & Storage', icon: 'box', soon: true },
+    { key: 'borrow', label: 'Borrow Log', icon: 'swap', soon: true },
+    { section: true, label: 'SETUP' },
+    { key: 'library', label: 'Report Library', icon: 'library', href: '#/rms/setup/library' },
+    { key: 'offices', label: 'Office Setup', icon: 'building', href: '#/rms/setup/offices' }];
 }
 
 export async function render(ctx) {
   const { app, refs, q, parts } = ctx;
   const rms = await loadRms();
-  const view = parts[0] || 'setup';
-  const sub = parts[1] || (canEditLibrary(refs) ? 'library' : 'offices');
-  const setupNav = `<div class="rms-seg"><a href="#/rms/setup/library" class="${sub === 'library' ? 'on' : ''}">Report Library</a><a href="#/rms/setup/offices" class="${sub === 'offices' ? 'on' : ''}">Office Setup</a></div>`;
-  let body = '';
-  if (view === 'setup' && sub === 'offices') body = setupNav + officesHtml(refs, rms, q);
-  else body = setupNav + libraryHtml(refs, rms, q);
-  app.innerHTML = frame(ctx, 'setup', body);
-  $$('[data-soon]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); toast(`${a.dataset.soon.replace('&amp;', '&')} comes next. Only Setup is built so far.`); }; });
-  if (sub === 'offices') wireOffices(refs, rms, q); else wireLibrary(refs, rms);
+  const year = new Date().getFullYear();
+  const jo = jobOrderOnly(refs);
+  let view = parts[0] || 'overview';
+  if (view === 'setup') view = parts[1] === 'offices' ? 'offices' : 'library';
+  if (jo) view = 'jo';
+  const overdue = jo ? [] : overdueAll(refs, rms, year);
+  const crumbs = { overview: 'Overview', monitor: 'Submission Monitor', library: 'Report Library', offices: 'Office Setup', jo: 'Receiving' };
+  const body = view === 'jo' ? joHtml()
+    : view === 'monitor' ? monitorHtml(refs, rms, q)
+    : view === 'library' ? libraryHtml(refs, rms, q)
+    : view === 'offices' ? officesHtml(refs, rms, q)
+    : overviewHtml(refs, rms, overdue);
+  const me = refs.me ? refs.me.data : { name: ctx.session.name || ctx.session.email };
+  const roleText = [refs.me?.data.position, roleLine(refs)].filter(Boolean).join(' · ');
+  app.innerHTML = moduleFrame({ title: 'Records<br>Management', items: navItems(refs, overdue.length), active: view === 'jo' ? 'receiving' : view, crumb: crumbs[view] || 'Overview', me, roleText, body });
+  $$('[data-soon]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); toast(`${a.dataset.soon} comes next. It is not built yet.`); }; });
+  if (view === 'offices') wireOffices(refs, rms, q);
+  else if (view === 'library') wireLibrary(refs, rms);
+  else if (view === 'monitor') wireMonitor(refs, rms, q);
+}
+
+const joHtml = () => `<div class="hello"><div><h1>Receiving</h1><p>Encode the documents you receive. This part is built next.</p></div></div>
+  <section class="panel"><div class="empty"><b>Coming next</b>Receiving, Records &amp; Storage and Borrow Log will appear here as they are built.</div></section>`;
+
+/* ================= Overview ================= */
+function greet() { const h = new Date().getHours(); return h < 12 ? 'Good Morning' : h < 18 ? 'Good Afternoon' : 'Good Evening'; }
+function overviewHtml(refs, rms, overdue) {
+  const me = refs.me?.data;
+  const first = me ? (me.nickname || String(me.name).split(/\s+/).find((w) => !/^(ATTY|ENGR|DR|MR|MS|MRS)\.?$/i.test(w)) || '') : '';
+  const nice = first ? first.charAt(0).toUpperCase() + first.slice(1).toLowerCase() : '';
+  const scopes = scopesFor(refs);
+  const offs = visibleOffices(refs, rms, scopes.map((s) => s.id));
+  const offIds = new Set(offs.map((o) => o.id));
+  const now = new Date(), ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const mine = rms.items.filter((i) => offIds.has(i.officeId));
+  const thisMonth = mine.filter((i) => String(i.receivedAt).slice(0, 7) === ym).length;
+  const incomplete = mine.filter((i) => i.status === 'incomplete' && !mine.some((j) => j.officeId === i.officeId && j.reportId === i.reportId && j.period === i.period && j.status === 'complete'));
+  const teamNames = [...new Set(myTeams(refs).map((t) => refs.team[t]?.data.name).filter(Boolean))].join(', ');
+  const recent = [...mine].sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 8);
+  const rep = (id) => rms.reports.find((r) => r.id === id);
+  const office = (id) => offs.find((o) => o.id === id);
+  // Overdue grouped by report and period.
+  const groups = {};
+  overdue.forEach(({ r, p }) => { const k = r.id + '|' + p; groups[k] = groups[k] || { r, p, n: 0 }; groups[k].n++; });
+  const top = Object.values(groups).sort((a, b) => b.n - a.n || a.p.localeCompare(b.p)).slice(0, 5);
+  const noCode = scopes.reduce((n, s) => n + auditeesOf(refs, rms, s.id).filter((a) => !a.main || !a.main.code).length, 0);
+  const cols = 'grid-template-columns:minmax(190px,1.2fr) minmax(160px,1fr) 120px 110px';
+  return `<div class="hello"><div><h1>${greet()}${nice ? ', ' + esc(nice) : ''}</h1><p>${esc(teamNames || 'Records Management')} · ${MONTHS_LONG[now.getMonth()]} ${now.getFullYear()} · ${offs.length} submitting office${offs.length === 1 ? '' : 's'}</p></div>
+      <div class="btn-row"><a class="btn" href="#/rms/monitor">Open Submission Monitor</a><button class="btn primary" type="button" data-soon="Receiving">+ Receive Documents</button></div></div>
+    <div class="stats">
+      <div class="stat"><span>Received This Month</span><b>${thisMonth}</b><small>tracking numbers issued</small></div>
+      <div class="stat"><span>Incomplete</span><b class="${incomplete.length ? 'warn' : ''}">${incomplete.length}</b><small>waiting for missing documents</small></div>
+      <a class="stat" href="#/rms/monitor?show=overdue"><span>Overdue</span><b class="${overdue.length ? 'bad' : ''}">${overdue.length}</b><small>past due, not yet submitted</small></a>
+      <div class="stat"><span>Borrowed Out</span><b class="dim">—</b><small>comes with the Borrow Log</small></div>
+    </div>
+    <div class="mgrid">
+      <section class="panel">
+        <div class="panel-head"><h2>Recently Received</h2></div>
+        ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Report</span><span>Received</span><span>Status</span></div>
+          ${recent.map((i) => `<div class="t-row" style="${cols}"><span class="mono">${esc(i.trackingNo || '')}</span><span>${esc(office(i.officeId)?.label || '')}<br><small>${i.reportId ? esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period)) : 'Communication'}</small></span><span><small>${esc(fmtDT(i.receivedAt))}</small></span><span>${i.status === 'incomplete' ? pill('Incomplete', 'warn') : i.reportId ? pill('Complete', 'ok') : pill('Received', 'blue')}</span></div>`).join('')}`
+          : '<div class="empty"><b>Nothing received yet</b>Items appear here once Receiving is in use.</div>'}
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Needs Attention</h2></div>
+        ${top.map((g) => `<a class="actrow" href="#/rms/monitor?r=${encodeURIComponent(g.r.id)}&y=${g.p.slice(0, 4)}&show=overdue"><b>${g.n} office${g.n > 1 ? "s" : ""}</b> ${g.n > 1 ? "have" : "has"} not submitted their ${esc(periodLabel(g.p))} ${esc(g.r.code)}.<small>Overdue since ${esc(fmtDate(dueDate(g.r, g.p)))} · consider demand letters</small></a>`).join('')}
+        ${incomplete.slice(0, 3).map((i) => `<div class="actrow"><b class="mono">${esc(i.trackingNo || '')}</b> is incomplete.<small>${esc(office(i.officeId)?.label || '')} · received ${esc(fmtDate(i.receivedAt))}</small></div>`).join('')}
+        ${noCode ? `<a class="actrow" href="#/rms/setup/offices"><b>${noCode} auditee${noCode > 1 ? 's' : ''}</b> still ${noCode > 1 ? 'have' : 'has'} no office code.<small>Office Setup</small></a>` : ''}
+        ${!rms.reports.length ? `<a class="actrow" href="#/rms/setup/library"><b>The Report Library is empty.</b><small>The Admin or SA Staff add the reports first.</small></a>` : ''}
+        ${!top.length && !incomplete.length && !noCode && rms.reports.length ? '<div class="empty"><b>All clear</b>Nothing needs attention right now.</div>' : ''}
+      </section>
+    </div>`;
+}
+
+/* ================= Submission Monitor ================= */
+function monitorHtml(refs, rms, q) {
+  const scopes = scopesFor(refs);
+  if (!scopes.length) return `<div class="msg bad">No team is assigned to you yet. Ask the Admin to set your team in Users &amp; Roles.</div>`;
+  const reports = rms.reports.filter((r) => r.active !== false && r.frequency !== 'As needed').sort((a, b) => a.code.localeCompare(b.code));
+  if (!reports.length) return `<div class="hello"><div><h1>Submission Monitor</h1><p>Which office submitted what, period by period.</p></div></div>
+    <section class="panel"><div class="empty"><b>No reports to monitor yet</b>The Admin or SA Staff add reports in the Report Library, and the teams tick them for their offices in Office Setup.</div></section>`;
+  const scopeId = q.get('m') === 'all' || !q.get('m') ? 'all' : (scopes.some((s) => s.id === q.get('m')) ? q.get('m') : 'all');
+  const now = new Date();
+  const year = +(q.get('y') || now.getFullYear());
+  const mode = q.get('v') === 'report' ? 'report' : 'month';
+  const show = q.get('show') || 'all';
+  const rid = reports.some((r) => r.id === q.get('r')) ? q.get('r') : reports[0].id;
+  const r = reports.find((x) => x.id === rid);
+  const month = Math.min(12, Math.max(1, +(q.get('mo') || (now.getFullYear() === year ? now.getMonth() || 1 : 12))));
+  const scopeIds = scopeId === 'all' ? scopes.map((s) => s.id) : [scopeId];
+  const offs = visibleOffices(refs, rms, scopeIds);
+  const label = (s) => s.data.kind === 'province' ? 'Province of Quirino' : s.data.name;
+  // Columns: periods of one report (By Month) or the reports for one month (By Report).
+  const columns = mode === 'month' ? periodsOf(r, year).map((p) => ({ key: p, head: periodShort(p), r, p }))
+    : reports.map((x) => ({ key: x.id, head: x.code, r: x, p: periodsOf(x, year).find((p) => { const [, a, b] = span(p); return month >= a && month <= b; }) }));
+  let rows = offs.filter((o) => columns.some((c) => (o.reportIds || []).includes(c.r.id)));
+  const cells = (o) => columns.map((c) => (o.reportIds || []).includes(c.r.id) && c.p ? { c, st: cellStatus(rms, o, c.r, c.p, now) } : { c, st: null });
+  const grid = rows.map((o) => ({ o, cs: cells(o) }));
+  const shown = grid.filter((g) => show === 'overdue' ? g.cs.some((x) => x.st && x.st.s === 'overdue') : show === 'incomplete' ? g.cs.some((x) => x.st && x.st.s === 'incomplete') : true);
+  const tally = {}; grid.forEach((g) => g.cs.forEach((x) => { if (x.st) tally[x.st.s] = (tally[x.st.s] || 0) + 1; }));
+  const qs = (patch) => { const o = { m: scopeId, r: rid, y: year, v: mode, mo: month, show, ...patch }; return '#/rms/monitor?' + Object.entries(o).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); };
+  const years = [now.getFullYear(), now.getFullYear() - 1];
+  return `<div class="hello"><div><h1>Submission Monitor</h1><p>Which office submitted what, period by period. Click a cell to see its details.</p></div>
+      <button class="btn" type="button" id="mon-print">Print</button></div>
+    <section class="panel">
+      <div class="mon-filters">
+        <label>Municipality<select class="input" data-f="m"><option value="all">All my municipalities</option>${scopes.map((s) => `<option value="${s.id}" ${s.id === scopeId ? 'selected' : ''}>${esc(label(s))}</option>`).join('')}</select></label>
+        ${mode === 'month' ? `<label>Report<select class="input" data-f="r">${reports.map((x) => `<option value="${x.id}" ${x.id === rid ? 'selected' : ''}>${esc(x.code + ' · ' + x.name)}</option>`).join('')}</select></label>`
+          : `<label>Month<select class="input" data-f="mo">${MONTHS_LONG.map((m, i) => `<option value="${i + 1}" ${i + 1 === month ? 'selected' : ''}>${m}</option>`).join('')}</select></label>`}
+        <label>Year<select class="input" data-f="y">${years.map((y) => `<option ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select></label>
+        <label>Show<select class="input" data-f="show"><option value="all">All offices</option><option value="overdue" ${show === 'overdue' ? 'selected' : ''}>With overdue only</option><option value="incomplete" ${show === 'incomplete' ? 'selected' : ''}>Incomplete only</option></select></label>
+        <div class="seg"><a href="${qs({ v: 'month' })}" class="${mode === 'month' ? 'on' : ''}">By Period</a><a href="${qs({ v: 'report' })}" class="${mode === 'report' ? 'on' : ''}">By Report</a></div>
+      </div>
+      <div class="mon-sum">${pill('✓ Complete ' + (tally.complete || 0), 'ok')}${pill('L Late ' + (tally.late || 0), 'late')}${pill('½ Incomplete ' + (tally.incomplete || 0), 'warn')}${pill('! Overdue ' + (tally.overdue || 0), 'bad')}${pill('· Not yet due ' + ((tally.notdue || 0) + (tally.nodue || 0)))}${tally.untracked ? pill('— Before monitoring ' + tally.untracked) : ''}</div>
+      ${shown.length ? `<div class="mon-wrap"><table class="mon"><thead><tr><th>Office · Code</th>${columns.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead><tbody>
+        ${shown.map((g) => `<tr><th><b>${esc(g.o.label)}</b><small class="mono">${esc(g.o.code || 'no office code')}</small></th>${g.cs.map((x) => x.st
+          ? `<td class="c ${x.st.s}" data-cell="${esc(g.o.id)}|${esc(x.c.r.id)}|${esc(x.c.p)}" title="${esc(STATUS_TEXT[x.st.s])}">${MARK[x.st.s]}</td>` : '<td class="c na"></td>').join('')}</tr>`).join('')}
+        </tbody></table></div>`
+        : `<div class="empty"><b>${rows.length ? 'Nothing to show for this filter' : 'No office submits this report yet'}</b>${rows.length ? 'Try Show: All offices.' : 'Tick the report for the offices in Office Setup.'}</div>`}
+      <div class="note">Monitoring starts with ${esc(periodLabel(rms.startPeriod))}; earlier periods show “—”. ${mode === 'month' ? esc(r.code + ' is ' + r.frequency.toLowerCase() + ', due ' + dueText(r).toLowerCase() + '.') : 'Quarterly, semi-annual and annual reports show the period that includes the chosen month.'}</div>
+    </section>
+    <section class="panel" id="cell-detail" hidden></section>`;
+}
+
+function wireMonitor(refs, rms, q) {
+  $$('[data-f]').forEach((s) => { s.onchange = () => {
+    const p = new URLSearchParams(location.hash.split('?')[1] || ''); p.set(s.dataset.f, s.value); location.hash = '#/rms/monitor?' + p.toString(); }; });
+  const pr = $('#mon-print'); if (pr) pr.onclick = () => window.print();
+  $$('[data-cell]').forEach((td) => { td.onclick = () => {
+    $$('td.c.picked').forEach((x) => x.classList.remove('picked')); td.classList.add('picked');
+    const [oid, rid, p] = td.dataset.cell.split('|');
+    const o = rms.offices.find((x) => x.id === oid), r = rms.reports.find((x) => x.id === rid);
+    const st = cellStatus(rms, o, r, p);
+    const box = $('#cell-detail'); box.hidden = false;
+    const row = (k, v) => `<div class="t-row" style="grid-template-columns:150px 1fr"><small>${k}</small><span>${v}</span></div>`;
+    const it = st.item;
+    box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], { complete: 'ok', late: 'late', incomplete: 'warn', overdue: 'bad' }[st.s] || '')}</span></div>
+      ${row('Due', st.due ? esc(fmtDate(st.due)) : 'No set due date')}
+      ${it ? row('Tracking No.', `<span class="mono">${esc(it.trackingNo || '')}</span>`) + row('Received', `${esc(fmtDT(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · submitted by ' + esc(it.submittedBy) : ''}`)
+        + row('Checklist', (it.checklist || []).map((c) => `${c.ok ? '✓' : '✗'} ${esc(c.item)}`).join(' &nbsp; ') || '—')
+        : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}
+      ${row('Checklist required', (r.checklist || []).map(esc).join(' · '))}`;
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }; });
 }
 
 /* ================= Report Library ================= */
@@ -103,7 +319,12 @@ function libraryHtml(refs, rms, q) {
   return `<div class="page">
     <div class="page-head"><div><h1>Report Library</h1><p>Office-wide list of reports the auditees submit. Kept by the Admin and SA Staff; used by all teams. It starts empty and grows as reports are added.</p></div>
       ${edit ? '<button class="btn primary" id="add-report">+ Add Report</button>' : ''}</div>
-    <section class="panel">
+    <section class="panel rms-start"><div class="panel-head"><h2>Monitoring Starts With</h2>
+        ${edit ? `<span class="r btn-row"><select class="input" id="st-m">${MONTHS_LONG.map((m, i) => `<option value="${String(i + 1).padStart(2, '0')}" ${rms.startPeriod.slice(5) === String(i + 1).padStart(2, '0') ? 'selected' : ''}>${m}</option>`).join('')}</select>
+          <select class="input" id="st-y">${[0, 1, 2].map((k) => new Date().getFullYear() - k).map((y) => `<option ${rms.startPeriod.slice(0, 4) === String(y) ? 'selected' : ''}>${y}</option>`).join('')}</select>
+          <button class="btn" id="st-save">Save</button></span>` : `<span class="r"><b>${esc(periodLabel(rms.startPeriod))}</b></span>`}</div>
+      <div class="note">The Submission Monitor tracks submissions from this month onward. Earlier periods show “—” instead of overdue.</div></section>
+    <section class="panel" style="margin-top:20px">
       <div class="panel-head"><h2>Reports · ${list.filter((r) => r.active !== false).length}</h2>${list.length ? '<span class="r"><label class="sr-only" for="find-rep">Search reports</label><input class="input" id="find-rep" placeholder="Search reports" style="width:200px"></span>' : ''}</div>
       ${list.length ? `<div class="t-head" style="${cols}"><span>Code</span><span>Report</span><span>Schedule</span><span>Checklist</span><span>Used by</span><span></span></div>
         <div id="rep-list">${list.map((r) => { const n = used(r.id); return `<div class="t-row ${r.active === false ? 'removed' : ''}" style="${cols}" data-find="${esc((r.code + ' ' + r.name).toLowerCase())}">
@@ -118,6 +339,9 @@ function libraryHtml(refs, rms, q) {
 
 function wireLibrary(refs, rms) {
   const add = $('#add-report'); if (add) add.onclick = () => editReport(refs, rms, null);
+  const st = $('#st-save'); if (st) st.onclick = async () => {
+    await store.save('rms_settings', 'office', { startPeriod: $('#st-y').value + '-' + $('#st-m').value }, by(refs));
+    toast('Monitoring start saved.', 'ok'); };
   $$('[data-edit-rep]').forEach((b) => { b.onclick = () => editReport(refs, rms, b.dataset.editRep); });
   $$('[data-view-rep]').forEach((b) => { b.onclick = () => viewReport(rms, b.dataset.viewRep); });
   const f = $('#find-rep'); if (f) f.oninput = () => { const v = f.value.trim().toLowerCase(); $$('#rep-list .t-row').forEach((r) => { r.hidden = v && !r.dataset.find.includes(v); }); };
@@ -185,13 +409,6 @@ async function editReport(refs, rms, id) {
 }
 
 /* ================= Office Setup ================= */
-function scopesFor(refs) {
-  const teams = myTeams(refs);
-  const prov = refs.lgus.find((l) => l.data.kind === 'province' && teams.includes(l.data.teamId));
-  const muns = refs.lgus.filter((l) => l.data.kind === 'municipality' && teams.includes(l.data.teamId)).sort((a, b) => a.data.name.localeCompare(b.data.name));
-  return [...(prov ? [prov] : []), ...muns];
-}
-
 function officesHtml(refs, rms, q) {
   const scopes = scopesFor(refs);
   if (!scopes.length) return `<div class="page"><div class="msg bad">No team is assigned to you yet. Ask the Admin to set your team in Users &amp; Roles.</div></div>`;

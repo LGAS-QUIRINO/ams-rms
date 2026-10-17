@@ -1,9 +1,9 @@
 // Keeps AMS working offline. Change RELEASE on every update so devices pick up the new files.
-const RELEASE = 'v0.5.1-rms';
+const RELEASE = 'v0.5.2-rms';
 const VERSION = 'ams|' + self.registration.scope + '|' + RELEASE;
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'img/coa-logo.png', 'img/icon-192.png', 'img/icon-512.png',
-  'js/app.js', 'js/config.js', 'js/db.js', 'js/auth.js', 'js/ui.js', 'js/modules.js', 'js/seed.js', 'js/store.js', 'js/api.js', 'js/sync.js', 'js/views/login.js', 'js/views/dashboard.js', 'js/views/admin.js',
+  'js/app.js', 'js/config.js', 'js/db.js', 'js/auth.js', 'js/ui.js', 'js/modules.js', 'js/seed.js', 'js/store.js', 'js/api.js', 'js/sync.js', 'js/views/login.js', 'js/views/dashboard.js', 'js/views/admin.js', 'js/frame.js',
   'modules/rms/rms.js', 'modules/rms/rms.css'];
 
 self.addEventListener('install', (e) => {

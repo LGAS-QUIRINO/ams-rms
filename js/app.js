@@ -121,6 +121,11 @@ function showDashboard(refs) {
 }
 
 window.addEventListener('hashchange', () => render());
+// Sign Out from inside a module (the module frame's top bar).
+document.addEventListener('click', async (e) => {
+  if (!e.target.closest || !e.target.closest('#m-signout')) return;
+  await auth.signOut(); history.replaceState(null, '', '#/'); showLogin();
+});
 window.addEventListener('sync-status', (e) => {
   const el = document.getElementById('sync'); if (el) el.outerHTML = syncPill(e.detail);
   if (e.detail.status === 'error' && e.detail.message) toast(e.detail.message, 'bad');

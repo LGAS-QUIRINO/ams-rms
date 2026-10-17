@@ -213,3 +213,60 @@ main.admin{flex:1}
   .login-card h1{font-size:21px}
   footer{justify-content:center; text-align:center}
 }
+
+/* ---------- Module frame (shared by every module) ---------- */
+.mshell{display:grid; grid-template-columns:260px minmax(0,1fr); min-height:100vh; position:relative; z-index:1}
+.mside{background:var(--navy); color:#dce4ee; display:flex; flex-direction:column; padding:20px 14px; gap:16px; position:sticky; top:0; height:100vh; overflow-y:auto}
+.mbrand{display:flex; gap:12px; align-items:center; padding:4px 6px}
+.mbrand img{width:46px; height:46px; border-radius:50%; background:#fff; flex:none}
+.mbrand b{display:block; color:#fff; font-size:16px; line-height:1.2}
+.mbrand small{color:#a9b8d6; font-size:12px}
+.mhome{color:#a9b8d6; text-decoration:none; font-size:12.5px; padding:6px 10px; border-radius:8px}
+.mhome:hover{background:rgba(255,255,255,.08); color:#fff}
+.mnav{display:flex; flex-direction:column; gap:2px}
+.mnav a{display:flex; align-items:center; gap:12px; color:#dce4ee; text-decoration:none; padding:10px 12px; border-radius:10px; font-size:14.5px}
+.mnav a:hover{background:rgba(255,255,255,.07)}
+.mnav a.on{background:rgba(255,255,255,.14); color:#fff; font-weight:700}
+.mnav a.soon{opacity:.5}
+.mnav .cnt{margin-left:auto; background:var(--red); color:#fff; border-radius:10px; font-size:11px; padding:1px 7px; font-weight:700}
+.msec{font-size:11px; letter-spacing:1.5px; color:#8fa2c7; padding:12px 12px 4px; border-top:1px solid rgba(255,255,255,.1); margin-top:6px}
+.syncbox{margin-top:auto; background:rgba(255,255,255,.07); border-radius:12px; padding:12px 14px; font-size:12.5px; line-height:1.5}
+.syncbox b{color:#fff}
+.syncbox i{display:inline-block; width:8px; height:8px; border-radius:50%; background:#5fd38a; margin-right:6px}
+.syncbox i.warn{background:#f2c84b}
+.mmain{min-width:0; display:flex; flex-direction:column; background:var(--bg)}
+.mtop{background:#fff; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; padding:14px 28px}
+.mtop .crumb{font-weight:700; color:var(--navy)}
+.mwho{margin-left:auto; display:flex; align-items:center; gap:10px}
+.mwho .av{width:40px; height:40px; border-radius:50%; background:#e3ebfa; color:var(--navy); display:grid; place-items:center; font-weight:700; flex:none}
+.mwho b{display:block; color:var(--ink); font-size:14px}
+.mwho small{color:var(--muted); font-size:12px}
+.mcontent{padding:26px 28px 40px; display:flex; flex-direction:column; gap:22px}
+.mcontent .page{padding:0; max-width:none; margin:0}
+.hello{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap}
+.hello h1{margin:0; font-size:28px; color:var(--ink)}
+.hello p{margin:4px 0 0; color:var(--muted); font-size:15px}
+.stats{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px}
+.stat{background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px 22px; text-decoration:none; color:inherit}
+.stat span{font-size:13.5px; color:var(--muted); font-weight:600}
+.stat b{display:block; font-size:34px; margin:6px 0 2px; color:var(--ink)}
+.stat b.bad{color:var(--bad)} .stat b.warn{color:#b07800} .stat b.dim{color:#b3bccd}
+.stat small{color:var(--muted)}
+.mgrid{display:grid; grid-template-columns:minmax(0,1.9fr) minmax(0,1fr); gap:22px; align-items:start}
+.actrow{padding:14px 22px; border-top:1px solid var(--line); font-size:13.5px; line-height:1.45; display:block; color:inherit; text-decoration:none}
+.actrow:first-of-type{border-top:0}
+a.actrow:hover{background:#f7f9fd}
+.actrow small{display:block; color:var(--muted); margin-top:3px}
+@media (max-width:1100px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))} .mgrid{grid-template-columns:1fr} }
+@media (max-width:760px){
+  .mshell{grid-template-columns:1fr}
+  .mside{position:static; height:auto; padding:14px}
+  .mnav{flex-direction:row; overflow-x:auto}
+  .mnav a{white-space:nowrap}
+  .msec, .syncbox{display:none}
+  .mcontent{padding:18px 16px 40px}
+  .mtop{padding:12px 16px}
+  .mwho > div:not(.av){display:none}
+  .hello h1{font-size:23px}
+}
+a.btn{text-decoration:none}

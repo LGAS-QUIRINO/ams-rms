@@ -99,12 +99,14 @@ async function receiveForm(refs, rms) {
         <div><span class="legend">Checklist · tick what was actually submitted</span><div id="f-list" class="rcv-list"></div><span class="hint" id="f-state"></span></div>
       </div>
       <div id="comm-part" hidden>
+        <div class="rcv-pdf"><label class="btn sm" for="f-pdf">Upload PDF to fill in</label><input type="file" id="f-pdf" accept="application/pdf,.pdf" hidden>
+          <span class="hint" id="f-pdf-hint">Reads the letter's subject, sender and signatory. The PDF itself is not saved.</span></div>
         <div class="field"><label><input type="checkbox" id="f-outside"> From outside (e.g. COA Regional Office II), not one of the offices</label></div>
         <div class="field" id="f-outside-box" hidden><label for="f-from">From</label><input class="input" id="f-from" placeholder="e.g. COA Regional Office II"></div>
         <div class="field"><label for="f-subj">Subject / Description</label><input class="input" id="f-subj" placeholder="e.g. Letter on the conduct of exit conference"></div>
         <div class="field" style="max-width:220px"><label for="f-pages">Pages / Attachments (optional)</label><input class="input" id="f-pages" placeholder="e.g. 3 pages"></div>
       </div>
-      <div class="two"><div class="field"><label for="f-by">Submitted by (name)</label><input class="input" id="f-by" list="f-by-list" placeholder="e.g. Juan P. Reyes"><datalist id="f-by-list"></datalist></div>
+      <div class="two"><div class="field"><label for="f-by">Received From (name)</label><input class="input" id="f-by" list="f-by-list" placeholder="e.g. Juan P. Reyes"><datalist id="f-by-list"></datalist></div>
         <div class="field"><label for="f-des">Designation</label><input class="input" id="f-des" placeholder="e.g. Barangay Treasurer"></div></div>
       <div class="field"><label for="f-rem">Remarks (optional)</label><input class="input" id="f-rem"></div>
       <p class="hint">Received by <b>${esc(myName(refs))}</b> · ${esc(fmtDT(now))} (recorded automatically)</p>`,
@@ -163,6 +165,29 @@ async function receiveForm(refs, rms) {
       $('#f-mun', bg).onchange = () => { try { localStorage.setItem('rms-last-mun', $('#f-mun', bg).value); } catch (e) { /* ignore */ } fillOffices(); };
       $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = dueHint;
       $('#f-by', bg).onchange = () => { const opt = [...$('#f-by-list', bg).options].find((x) => x.value === $('#f-by', bg).value); if (opt && !$('#f-des', bg).value) $('#f-des', bg).value = opt.textContent; };
+      $('#f-pdf', bg).onchange = async () => {
+        const f = $('#f-pdf', bg).files[0]; if (!f) return;
+        const hint = $('#f-pdf-hint', bg); hint.textContent = 'Reading the PDF…';
+        try {
+          const got = await readLetterPdf(f);
+          if (!got.text.trim()) { hint.textContent = 'This PDF looks scanned (no text to read). Please type the details.'; return; }
+          if (got.subject) $('#f-subj', bg).value = got.subject;
+          if (got.pages) $('#f-pages', bg).value = got.pages + ' page' + (got.pages > 1 ? 's' : '');
+          if (got.signatory) $('#f-by', bg).value = got.signatory;
+          if (got.designation) $('#f-des', bg).value = got.designation;
+          // Sender: one of the offices if its name appears in the letterhead, else an outside sender.
+          const hit = got.from && offs.filter((o) => o.code).find((o) => matchesOffice(got.text.slice(0, 600), o));
+          if (hit) {
+            $('#f-outside', bg).checked = false; $('#f-outside', bg).onchange();
+            $('#f-mun', bg).value = hit.munId; fillOffices(); $('#f-off', bg).value = hit.id; fillReports();
+          } else if (got.from) {
+            $('#f-outside', bg).checked = true; $('#f-outside', bg).onchange(); $('#f-from', bg).value = got.from;
+          }
+          hint.textContent = `Filled in from ${f.name}. Please check before saving.`;
+          const nm = $('#f-rem', bg); if (!nm.value) nm.value = 'From PDF: ' + f.name;
+        } catch (e) { hint.textContent = 'Could not read this PDF: ' + e.message; }
+        finally { $('#f-pdf', bg).value = ''; }
+      };
       fillOffices(); kindState();
     },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save and Get Number', cls: 'primary', value: 'save', check: (bg) => {
@@ -171,7 +196,7 @@ async function receiveForm(refs, rms) {
       const o = outside ? null : offs.find((x) => x.id === $('#f-off', bg).value);
       if (!outside && (!o || !o.code)) { toast('Choose a submitting office that has an office code.', 'bad'); return false; }
       const submittedBy = $('#f-by', bg).value.trim(), designation = $('#f-des', bg).value.trim();
-      if (!submittedBy) { toast('Enter the name of the person who submitted it.', 'bad'); return false; }
+      if (!submittedBy) { toast('Enter the name in Received From.', 'bad'); return false; }
       const base = { kind, receivedAt: new Date().toISOString(), receivedBy: by(refs), receivedByName: myName(refs), submittedBy, submittedDesignation: designation,
         remarks: $('#f-rem', bg).value.trim(), officeId: o ? o.id : '', officeCode: o ? o.code : '', teamId: o ? o.teamId : (refs.me?.data.teamIds || [])[0] || '', munId: o ? o.munId : '' };
       if (kind === 'report') {
@@ -221,7 +246,7 @@ async function decide(refs, rms, id) {
   let out = null;
   const res = await modal({
     title: 'Accept or Reject · ' + i.pendingCode,
-    body: `<p><b>${esc(off?.label || '')}</b> · ${esc(i.reportCode + ' · ' + periodLabel(i.period))}<br><small>Received ${esc(fmtDT(i.receivedAt))} by ${esc(i.receivedByName)} · submitted by ${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</small></p>
+    body: `<p><b>${esc(off?.label || '')}</b> · ${esc(i.reportCode + ' · ' + periodLabel(i.period))}<br><small>Received ${esc(fmtDT(i.receivedAt))} by ${esc(i.receivedByName)} · received from ${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</small></p>
       <div><span class="legend">Checklist</span><ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}</li>`).join('')}</ul></div>
       <div class="rcv-type"><label><input type="radio" name="dec" value="accept" checked> Accept – give it a tracking number (missing documents to follow)</label><label><input type="radio" name="dec" value="reject"> Reject – return to the submitter</label></div>
       <div class="field"><label for="d-rem">Remarks <span id="d-req" hidden>(required for a rejection)</span></label><input class="input" id="d-rem" placeholder="e.g. Accepted; DVs to follow within 5 days"></div>`,
@@ -274,7 +299,7 @@ function viewItem(refs, rms, id) {
   modal({ title: numberOf(i), body: `${row('Status', statusPill(i))}${row('Office', esc(i.fromOutside || off?.label || ''))}
     ${i.kind === 'comm' ? row('Subject', esc(i.subject)) + (i.pages ? row('Pages', esc(i.pages)) : '') : row('Report', esc(i.reportCode + ' · ' + periodLabel(i.period)))}
     ${row('Received', esc(fmtDT(i.receivedAt)) + ' by ' + esc(i.receivedByName))}
-    ${row('Submitted by', esc(i.submittedBy) + (i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''))}
+    ${row('Received from', esc(i.submittedBy) + (i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''))}
     ${i.pendingCode && i.trackingNo ? row('Pending code', `<span class="mono">${esc(i.pendingCode)}</span>`) : ''}
     ${i.checklist ? row('Checklist', `<ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`).join('')}</ul>`) : ''}
     ${i.decision ? row('Decision', `${i.decision.action === 'accept' ? 'Accepted' : 'Rejected'} by ${esc(i.decision.byName)} · ${esc(fmtDT(i.decision.at))}${i.decision.remarks ? '<br><small>' + esc(i.decision.remarks) + '</small>' : ''}`) : ''}
@@ -308,7 +333,7 @@ export function printSlip(refs, rms, i) {
     <div class="kv"><span>${i.fromOutside ? 'From' : 'Office'}</span><span><b>${esc(i.fromOutside || off?.label || '')}</b></span>
       ${i.kind === 'comm' ? `<span>Subject</span><span>${esc(i.subject)}${i.pages ? ' · ' + esc(i.pages) : ''}</span>` : `<span>Report</span><span>${esc((rep?.name || i.reportCode) + ' · ' + periodLabel(i.period))}</span>`}
       <span>Received</span><span>${esc(new Date(i.receivedAt).toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span>
-      <span>Submitted by</span><span>${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</span></div>
+      <span>Received from</span><span>${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</span></div>
     ${i.kind === 'report' ? `<div class="sec">RECEIVED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}${c.late ? ' (' + esc(fmtDate(c.at)) + ')' : ''}</li>`).join('')}</ul>
       <div class="sec">MISSING</div><ul>${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>
       ${pend ? `<div class="note">Incomplete. Subject to the Auditor's acceptance. Please submit the missing documents; a tracking number is given once accepted.</div>` : ''}` : ''}
@@ -317,4 +342,72 @@ export function printSlip(refs, rms, i) {
   const w = window.open('', '_blank');
   if (!w) return toast('Allow pop-ups for this site to print the slip.', 'bad');
   w.document.open(); w.document.write(html.replace('src="img/coa-logo.png"', `src="${new URL('img/coa-logo.png', location.href).href}"`)); w.document.close();
+}
+
+/* ---------- reading a letter PDF (fill-in only; the file is not stored) ---------- */
+let pdfLib = null;
+function loadPdfLib() {
+  if (pdfLib) return pdfLib;
+  pdfLib = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    const sc = document.createElement('script'); sc.src = 'lib/pdf.min.js';
+    sc.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js'; resolve(window.pdfjsLib); };
+    sc.onerror = () => { pdfLib = null; reject(new Error('the PDF reader could not load')); };
+    document.head.appendChild(sc);
+  });
+  return pdfLib;
+}
+// Text of the first pages, line by line (pieces on the same line are joined).
+async function pdfLines(file) {
+  const lib = await loadPdfLib();
+  const doc = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const lines = [];
+  for (let n = 1; n <= Math.min(doc.numPages, 3); n++) {
+    const page = await doc.getPage(n);
+    const tc = await page.getTextContent();
+    const rows = new Map();
+    tc.items.forEach((it) => { const y = Math.round(it.transform[5] / 3); const r = rows.get(y) || []; r.push(it); rows.set(y, r); });
+    [...rows.keys()].sort((a, b) => b - a).forEach((y) => {
+      const t = rows.get(y).sort((a, b) => a.transform[4] - b.transform[4]).map((it) => it.str).join(' ').replace(/\s+/g, ' ').trim();
+      if (t) lines.push(t);
+    });
+  }
+  return { lines, pages: doc.numPages };
+}
+const LETTERHEAD_SKIP = /^(republic of the philippines|commission on audit|office of the|tel\.?|telephone|e-?mail|website|www\.|fax)/i;
+export async function readLetterPdf(file) {
+  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') throw new Error('choose a PDF file');
+  const { lines, pages } = await pdfLines(file);
+  const text = lines.join('\n');
+  // Subject: "SUBJECT:", "Subject :", "RE:", "Re:" — the line, plus the next line when it continues.
+  let subject = '';
+  const si = lines.findIndex((l) => /^(subject|re)\s*[:：]/i.test(l));
+  if (si >= 0) {
+    subject = lines[si].replace(/^(subject|re)\s*[:：]\s*/i, '');
+    const nx = lines[si + 1] || '';
+    if (nx && !/[:：]/.test(nx) && !/^(dear|sir|madam|gentlemen|maam|ma'am)/i.test(nx) && nx.length < 120 && subject.length > 40) subject += ' ' + nx;
+  }
+  // Sender: the first letterhead line that names an office (skipping the usual first lines).
+  const head = lines.slice(0, 8);
+  const from = (head.find((l) => !LETTERHEAD_SKIP.test(l) && /(municipal|municipality|city|province|provincial|barangay|sangguniang|hospital|office|department|regional|region)/i.test(l)) || '').replace(/\s+/g, ' ');
+  // Signatory: an all-capital name (2–6 words) near the end, followed by a designation line.
+  let signatory = '', designation = '';
+  for (let k = lines.length - 1; k >= Math.max(0, lines.length - 25); k--) {
+    const l = lines[k];
+    if (/^[A-ZÑ][A-ZÑ.\-' ]{4,60}$/.test(l) && l.split(' ').length >= 2 && l.split(' ').length <= 7 && !/(PHILIPPINES|COMMISSION|REPUBLIC|OFFICE|MUNICIPALITY|PROVINCE|BARANGAY)/.test(l)) {
+      signatory = l.replace(/\s+/g, ' ');
+      const d = lines[k + 1] || '';
+      if (d && d.length < 80 && !/^(cc|copy|attachment|encl)/i.test(d)) designation = d;
+      break;
+    }
+  }
+  return { text, subject: subject.trim(), from, signatory, designation, pages };
+}
+// Does the letterhead name this office? (e.g. "BARANGAY ABBAG", "MUNICIPALITY OF MADDELA")
+function matchesOffice(head, o) {
+  const words = String(o.label || o.name || '').replace(/^(barangay|municipality of|sk of|provincial government of)\s+/i, '').split(' · ')[0].trim();
+  if (!words) return false;
+  const h = head.toUpperCase();
+  const kind = /^barangay/i.test(o.label) ? 'BARANGAY' : /^sk of/i.test(o.label) ? 'SANGGUNIANG KABATAAN' : /^municipality/i.test(o.label) ? 'MUNICIPAL' : '';
+  return h.includes(words.toUpperCase()) && (!kind || h.includes(kind));
 }

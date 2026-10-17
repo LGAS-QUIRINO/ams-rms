@@ -305,7 +305,7 @@ function wireMonitor(refs, rms, q) {
     const it = st.item;
     box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], { complete: 'ok', late: 'late', incomplete: 'warn', overdue: 'bad' }[st.s] || '')}</span></div>
       ${row('Due', st.due ? esc(fmtDate(st.due)) : 'No set due date')}
-      ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDT(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · submitted by ' + esc(it.submittedBy) : ''}`)
+      ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDT(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · received from ' + esc(it.submittedBy) : ''}`)
         + row('Checklist', (it.checklist || []).map((c) => `${c.ok ? '✓' : '✗'} ${esc(c.item)}${c.late ? ' <small>(late, ' + esc(fmtDate(c.at)) + ')</small>' : ''}`).join(' &nbsp; ') || '—')
         : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}
       ${row('Checklist required', (r.checklist || []).map(esc).join(' · '))}`;

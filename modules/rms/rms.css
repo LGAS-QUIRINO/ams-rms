@@ -88,3 +88,4 @@ ul.rcv-ck li.miss:before{content:"✗"; position:absolute; left:2px; color:var(-
 .kvrow{display:grid; grid-template-columns:120px 1fr; gap:10px; padding:6px 0; border-top:1px solid var(--line)}
 .kvrow:first-child{border-top:0}
 .kvrow > small{color:var(--muted)}
+.rcv-pdf{display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px; border:1px dashed #b9c4dc; border-radius:10px; background:#f8fafe}

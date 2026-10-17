@@ -83,6 +83,18 @@ async function render() {
     render.sameRoute = location.hash;
     return;
   }
+  // A finished module opens from its card: #/<module id>/...  (its code lives in modules/<id>/)
+  const mod = MODULES.find((m) => m.id === part[0] && m.ready && m.entry);
+  if (mod) {
+    const y = window.scrollY, same = render.sameRoute === location.hash;
+    render.sameRoute = location.hash;
+    try {
+      const m = await import('../' + mod.entry);
+      await m.render({ app, refs, q, parts: part.slice(1), session: auth.session, rerender: render, syncHtml: syncPill() });
+      if (same) window.scrollTo(0, y);
+    } catch (e) { app.innerHTML = `<div class="page"><div class="msg bad">${e.message}</div><a class="btn" href="#/">← Back to Dashboard</a></div>`; }
+    return;
+  }
   render.sameRoute = '';
   showDashboard(refs);
 }

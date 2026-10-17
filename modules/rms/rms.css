@@ -1,0 +1,34 @@
+/* Records Management module */
+.rms-subnav{background:#fff; border-bottom:1px solid var(--line); display:flex; gap:2px; padding:0 20px; overflow-x:auto}
+.rms-subnav a{padding:12px 14px; color:var(--muted); text-decoration:none; font-size:13px; border-bottom:3px solid transparent; white-space:nowrap}
+.rms-subnav a.on{color:var(--navy); font-weight:700; border-bottom-color:#1f5fd1}
+.rms-subnav a.dim{opacity:.55}
+.rms-seg{max-width:1240px; margin:16px auto 0; padding:0 20px; display:flex; gap:6px}
+.rms-seg a{padding:7px 14px; border-radius:20px; border:1px solid var(--line); background:#fff; color:var(--muted); text-decoration:none; font-size:13px}
+.rms-seg a.on{background:var(--navy); border-color:var(--navy); color:#fff; font-weight:600}
+.panel-head .r{margin-left:auto}
+.filters{display:flex; gap:10px; flex-wrap:wrap; padding:12px 18px; border-top:1px solid var(--line)}
+.filters .input{width:auto; min-width:200px}
+.chips{display:flex; flex-wrap:wrap; gap:4px}
+.pill.blue{background:#e7efff; color:#1d4fb8}
+.t-row.sub{background:#fafbfe}
+.t-row.sub > span:first-child{padding-left:22px}
+.acts{display:flex; gap:6px; flex-wrap:wrap}
+.empty b{display:block; color:var(--ink); font-size:15px; margin-bottom:6px}
+.panel .empty{text-align:center; padding:34px 18px; border-top:0}
+.legend{display:block; font-size:12px; font-weight:700; margin-bottom:5px}
+.rms-codename{display:grid; grid-template-columns:120px 1fr; gap:12px}
+.rms-due-n{display:flex; align-items:center; gap:8px; margin-top:6px}
+.rms-due-n .input{width:80px}
+.rms-due-n[hidden]{display:none}
+.list-edit{border:1px solid var(--line); border-radius:10px}
+.list-edit > div{display:flex; align-items:center; gap:8px; padding:8px 10px; border-top:1px solid var(--line); font-size:13px}
+.list-edit > div:first-child{border-top:0}
+.list-edit .n{width:22px; color:var(--muted); flex:none}
+.list-edit .txt{flex:1}
+.list-edit .mini{border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:15px; padding:2px 6px; border-radius:6px}
+.list-edit .mini:hover{background:#eef2fa}
+.list-edit .mini:disabled{opacity:.3; cursor:default}
+.rms-ol{margin:0; padding-left:20px; line-height:1.7}
+.rms-targets{grid-template-columns:1fr; max-height:300px; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:10px}
+@media (max-width:640px){ .rms-codename{grid-template-columns:1fr} .filters .input{min-width:0; width:100%} }

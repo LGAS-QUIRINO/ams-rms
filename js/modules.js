@@ -1,5 +1,6 @@
 // The AMS modules shown as cards on the dashboard.
-// When a module is finished and moved in, set ready: true and point path to its folder (e.g. 'modules/rms/').
+// When a module is finished and moved in, set ready: true, path to its first screen (e.g. '#/rms') and entry to its
+// main file (e.g. 'modules/rms/rms.js'). Its screens then open from the card.
 const ICON = {
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   doc: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h8"/>',
@@ -11,7 +12,7 @@ const ICON = {
 };
 
 export const MODULES = [
-  { id: 'rms', title: 'Records Management', text: 'Manage audit records and reference files.', color: '#1f5fd1', icon: ICON.folder, ready: false, path: '' },
+  { id: 'rms', title: 'Records Management', text: 'Manage audit records and reference files.', color: '#1f5fd1', icon: ICON.folder, ready: true, path: '#/rms', entry: 'modules/rms/rms.js' },
   { id: 'periodic', title: 'Periodic Reports', text: 'Prepare and manage required periodic reports.', color: '#d62839', icon: ICON.doc, ready: false, path: '' },
   { id: 'other', title: 'Other Reports', text: 'Reports needed by the Region and Central Office, filled up by the teams.', color: '#e9a800', icon: ICON.docClock, ready: false, path: '' },
   { id: 'cer', title: 'Cash Examination Report', text: 'Prepare and manage Cash Examination Reports (CER).', color: '#1e8a4c', icon: ICON.docSearch, ready: false, path: '' },

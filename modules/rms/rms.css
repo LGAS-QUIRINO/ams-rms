@@ -68,3 +68,23 @@ td.c.picked, td.c:not(.na):hover{outline:2px solid var(--blue); outline-offset:-
   .mshell{display:block} .mcontent{padding:0} .mon-wrap{overflow:visible} table.mon{min-width:0}
   td.c{-webkit-print-color-adjust:exact; print-color-adjust:exact}
 }
+
+/* Receiving */
+.rcv-type{display:flex; gap:18px; flex-wrap:wrap; font-size:14px; font-weight:600}
+.rcv-type label{display:flex; align-items:center; gap:8px}
+.rcv-list{display:flex; flex-direction:column; gap:6px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:13.5px}
+.rcv-list label{display:flex; align-items:center; gap:8px}
+.rcv-list label.done{color:var(--ok)}
+.rcv-list small{color:var(--muted)}
+.ok-t{color:var(--ok)} .warn-t{color:#a06800}
+.rcv-done{text-align:center; border:2px solid var(--navy); border-radius:12px; padding:14px; margin-bottom:6px}
+.rcv-done.pend{border-style:dashed; border-color:#a06800}
+.rcv-done small{display:block; letter-spacing:1.5px; color:var(--muted); font-size:11px}
+.rcv-done b{font:700 22px Consolas,"Courier New",monospace; color:var(--ink)}
+ul.rcv-ck{margin:0; padding:0; list-style:none}
+ul.rcv-ck li{padding:2px 0 2px 20px; position:relative}
+ul.rcv-ck li.ok:before{content:"✓"; position:absolute; left:2px; color:var(--ok); font-weight:700}
+ul.rcv-ck li.miss:before{content:"✗"; position:absolute; left:2px; color:var(--bad); font-weight:700}
+.kvrow{display:grid; grid-template-columns:120px 1fr; gap:10px; padding:6px 0; border-top:1px solid var(--line)}
+.kvrow:first-child{border-top:0}
+.kvrow > small{color:var(--muted)}

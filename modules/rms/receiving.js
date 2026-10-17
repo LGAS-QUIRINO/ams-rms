@@ -3,6 +3,7 @@
 // accept or reject) → small acknowledgment slip. Late documents are added to the same tracking number with their dates.
 import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
+import { pdfToLines, parseDetails } from './pdfread.js';
 import { scopesFor, visibleOffices, periodsOf, periodLabel, dueDate, span, fmtDT, fmtDate, jobOrderOnly, hasRole } from './rms.js';
 
 const by = (refs) => refs.me?.data.email || '';
@@ -90,7 +91,10 @@ async function receiveForm(refs, rms) {
   let out = null;
   const res = await modal({
     title: 'Receive Documents', wide: true,
-    body: `<div class="rcv-type"><label><input type="radio" name="kind" value="report" checked> Report Submission</label><label><input type="radio" name="kind" value="comm"> Communication</label></div>
+    body: `<div class="rcv-pdf"><label class="btn sm" for="f-pdf">Upload PDF to fill in</label><input type="file" id="f-pdf" accept="application/pdf,.pdf" hidden>
+        <span class="hint" id="f-pdf-hint">Reads the office, report and period, or a letter's subject, sender and signatory. The PDF itself is not saved.</span>
+        <button type="button" class="btn sm primary" id="f-ocr" hidden>Read scanned pages</button></div>
+      <div class="rcv-type"><label><input type="radio" name="kind" value="report" checked> Report Submission</label><label><input type="radio" name="kind" value="comm"> Communication</label></div>
       <div class="two"><div class="field"><label for="f-mun">Municipality</label><select class="input" id="f-mun">${scopes.map((s) => `<option value="${s.id}">${esc(label(s))}</option>`).join('')}</select></div>
         <div class="field"><label for="f-off">Submitting Office</label><select class="input" id="f-off"></select><span class="hint" id="f-off-hint"></span></div></div>
       <div id="rep-part">
@@ -99,8 +103,7 @@ async function receiveForm(refs, rms) {
         <div><span class="legend">Checklist · tick what was actually submitted</span><div id="f-list" class="rcv-list"></div><span class="hint" id="f-state"></span></div>
       </div>
       <div id="comm-part" hidden>
-        <div class="rcv-pdf"><label class="btn sm" for="f-pdf">Upload PDF to fill in</label><input type="file" id="f-pdf" accept="application/pdf,.pdf" hidden>
-          <span class="hint" id="f-pdf-hint">Reads the letter's subject, sender and signatory. The PDF itself is not saved.</span></div>
+
         <div class="field"><label><input type="checkbox" id="f-outside"> From outside (e.g. COA Regional Office II), not one of the offices</label></div>
         <div class="field" id="f-outside-box" hidden><label for="f-from">From</label><input class="input" id="f-from" placeholder="e.g. COA Regional Office II"></div>
         <div class="field"><label for="f-subj">Subject / Description</label><input class="input" id="f-subj" placeholder="e.g. Letter on the conduct of exit conference"></div>
@@ -165,29 +168,43 @@ async function receiveForm(refs, rms) {
       $('#f-mun', bg).onchange = () => { try { localStorage.setItem('rms-last-mun', $('#f-mun', bg).value); } catch (e) { /* ignore */ } fillOffices(); };
       $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = dueHint;
       $('#f-by', bg).onchange = () => { const opt = [...$('#f-by-list', bg).options].find((x) => x.value === $('#f-by', bg).value); if (opt && !$('#f-des', bg).value) $('#f-des', bg).value = opt.textContent; };
-      $('#f-pdf', bg).onchange = async () => {
-        const f = $('#f-pdf', bg).files[0]; if (!f) return;
-        const hint = $('#f-pdf-hint', bg); hint.textContent = 'Reading the PDF…';
+      // Upload PDF to fill in (reports and communications). Scanned PDFs are read only when the receiver asks.
+      let pdfFile = null;
+      const applyPdf = async (allowOcr) => {
+        const hint = $('#f-pdf-hint', bg), ocrBtn = $('#f-ocr', bg);
+        ocrBtn.hidden = true;
+        hint.textContent = allowOcr ? 'Reading the scanned pages… this can take a few seconds per page.' : 'Reading the PDF…';
         try {
-          const got = await readLetterPdf(f);
-          if (!got.text.trim()) { hint.textContent = 'This PDF looks scanned (no text to read). Please type the details.'; return; }
-          if (got.subject) $('#f-subj', bg).value = got.subject;
-          if (got.pages) $('#f-pages', bg).value = got.pages + ' page' + (got.pages > 1 ? 's' : '');
-          if (got.signatory) $('#f-by', bg).value = got.signatory;
-          if (got.designation) $('#f-des', bg).value = got.designation;
-          // Sender: one of the offices if its name appears in the letterhead, else an outside sender.
-          const hit = got.from && offs.filter((o) => o.code).find((o) => matchesOffice(got.text.slice(0, 600), o));
-          if (hit) {
-            $('#f-outside', bg).checked = false; $('#f-outside', bg).onchange();
-            $('#f-mun', bg).value = hit.munId; fillOffices(); $('#f-off', bg).value = hit.id; fillReports();
-          } else if (got.from) {
-            $('#f-outside', bg).checked = true; $('#f-outside', bg).onchange(); $('#f-from', bg).value = got.from;
+          const got = await pdfToLines(pdfFile, { allowOcr, onProgress: (pr, page, of) => {
+            if (page) hint.textContent = `Reading scanned page ${page} of ${of}…`; else if (pr) hint.textContent = hint.textContent.replace(/ \d+%$/, '') + ` ${Math.round(pr * 100)}%`; } });
+          if (got.scanned && !allowOcr) { hint.textContent = 'This PDF is a scan (no text inside). The app can read the scanned pages; results may need checking.'; ocrBtn.hidden = false; return; }
+          const d = parseDetails(got.lines, { reports: rms.reports.filter((r) => r.active !== false), offices: offs });
+          if (!d.text.trim()) { hint.textContent = 'No readable text was found. Please type the details.'; return; }
+          const filled = [];
+          const isReport = !!d.report && !d.subject;
+          $(`input[name=kind][value=${isReport ? 'report' : 'comm'}]`, bg).checked = true; kindState();
+          if (d.office) {
+            if (!isReport) { $('#f-outside', bg).checked = false; $('#f-outside', bg).onchange(); }
+            $('#f-mun', bg).value = d.office.munId; fillOffices(); $('#f-off', bg).value = d.office.id; fillReports(); filled.push('office');
+          } else if (!isReport && d.from) { $('#f-outside', bg).checked = true; $('#f-outside', bg).onchange(); $('#f-from', bg).value = d.from; filled.push('sender'); }
+          if (isReport) {
+            if ([...$('#f-rep', bg).options].some((o) => o.value === d.report.id)) { $('#f-rep', bg).value = d.report.id; fillPeriods(); filled.push('report'); }
+            const per = [...$('#f-per', bg).options].find((o) => o.value === d.period || (d.period && o.value.startsWith(d.period)));
+            if (per) { $('#f-per', bg).value = per.value; dueHint(); filled.push('period'); }
+          } else {
+            if (d.subject) { $('#f-subj', bg).value = d.subject; filled.push('subject'); }
+            if (got.pages) $('#f-pages', bg).value = got.pages + ' page' + (got.pages > 1 ? 's' : '');
           }
-          hint.textContent = `Filled in from ${f.name}. Please check before saving.`;
-          const nm = $('#f-rem', bg); if (!nm.value) nm.value = 'From PDF: ' + f.name;
+          if (d.signatory) { $('#f-by', bg).value = d.signatory; filled.push('name'); }
+          if (d.designation) $('#f-des', bg).value = d.designation;
+          const rem = $('#f-rem', bg); if (!rem.value) rem.value = 'From PDF: ' + pdfFile.name + (got.scanned ? ' (scanned)' : '');
+          hint.textContent = filled.length ? `Filled in ${filled.join(', ')} from ${pdfFile.name}${got.scanned ? ' (scanned – please check carefully)' : ''}. Please check before saving.`
+            : `Could not find the details in ${pdfFile.name}. Please fill them in.`;
+          if (isReport) hint.textContent += ' Tick the checklist yourself.';
         } catch (e) { hint.textContent = 'Could not read this PDF: ' + e.message; }
-        finally { $('#f-pdf', bg).value = ''; }
       };
+      $('#f-pdf', bg).onchange = () => { const f = $('#f-pdf', bg).files[0]; if (!f) return; pdfFile = f; $('#f-pdf', bg).value = ''; applyPdf(false); };
+      $('#f-ocr', bg).onclick = () => { if (pdfFile) applyPdf(true); };
       fillOffices(); kindState();
     },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save and Get Number', cls: 'primary', value: 'save', check: (bg) => {
@@ -342,72 +359,4 @@ export function printSlip(refs, rms, i) {
   const w = window.open('', '_blank');
   if (!w) return toast('Allow pop-ups for this site to print the slip.', 'bad');
   w.document.open(); w.document.write(html.replace('src="img/coa-logo.png"', `src="${new URL('img/coa-logo.png', location.href).href}"`)); w.document.close();
-}
-
-/* ---------- reading a letter PDF (fill-in only; the file is not stored) ---------- */
-let pdfLib = null;
-function loadPdfLib() {
-  if (pdfLib) return pdfLib;
-  pdfLib = new Promise((resolve, reject) => {
-    if (window.pdfjsLib) return resolve(window.pdfjsLib);
-    const sc = document.createElement('script'); sc.src = 'lib/pdf.min.js';
-    sc.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js'; resolve(window.pdfjsLib); };
-    sc.onerror = () => { pdfLib = null; reject(new Error('the PDF reader could not load')); };
-    document.head.appendChild(sc);
-  });
-  return pdfLib;
-}
-// Text of the first pages, line by line (pieces on the same line are joined).
-async function pdfLines(file) {
-  const lib = await loadPdfLib();
-  const doc = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
-  const lines = [];
-  for (let n = 1; n <= Math.min(doc.numPages, 3); n++) {
-    const page = await doc.getPage(n);
-    const tc = await page.getTextContent();
-    const rows = new Map();
-    tc.items.forEach((it) => { const y = Math.round(it.transform[5] / 3); const r = rows.get(y) || []; r.push(it); rows.set(y, r); });
-    [...rows.keys()].sort((a, b) => b - a).forEach((y) => {
-      const t = rows.get(y).sort((a, b) => a.transform[4] - b.transform[4]).map((it) => it.str).join(' ').replace(/\s+/g, ' ').trim();
-      if (t) lines.push(t);
-    });
-  }
-  return { lines, pages: doc.numPages };
-}
-const LETTERHEAD_SKIP = /^(republic of the philippines|commission on audit|office of the|tel\.?|telephone|e-?mail|website|www\.|fax)/i;
-export async function readLetterPdf(file) {
-  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') throw new Error('choose a PDF file');
-  const { lines, pages } = await pdfLines(file);
-  const text = lines.join('\n');
-  // Subject: "SUBJECT:", "Subject :", "RE:", "Re:" — the line, plus the next line when it continues.
-  let subject = '';
-  const si = lines.findIndex((l) => /^(subject|re)\s*[:：]/i.test(l));
-  if (si >= 0) {
-    subject = lines[si].replace(/^(subject|re)\s*[:：]\s*/i, '');
-    const nx = lines[si + 1] || '';
-    if (nx && !/[:：]/.test(nx) && !/^(dear|sir|madam|gentlemen|maam|ma'am)/i.test(nx) && nx.length < 120 && subject.length > 40) subject += ' ' + nx;
-  }
-  // Sender: the first letterhead line that names an office (skipping the usual first lines).
-  const head = lines.slice(0, 8);
-  const from = (head.find((l) => !LETTERHEAD_SKIP.test(l) && /(municipal|municipality|city|province|provincial|barangay|sangguniang|hospital|office|department|regional|region)/i.test(l)) || '').replace(/\s+/g, ' ');
-  // Signatory: an all-capital name (2–6 words) near the end, followed by a designation line.
-  let signatory = '', designation = '';
-  for (let k = lines.length - 1; k >= Math.max(0, lines.length - 25); k--) {
-    const l = lines[k];
-    if (/^[A-ZÑ][A-ZÑ.\-' ]{4,60}$/.test(l) && l.split(' ').length >= 2 && l.split(' ').length <= 7 && !/(PHILIPPINES|COMMISSION|REPUBLIC|OFFICE|MUNICIPALITY|PROVINCE|BARANGAY)/.test(l)) {
-      signatory = l.replace(/\s+/g, ' ');
-      const d = lines[k + 1] || '';
-      if (d && d.length < 80 && !/^(cc|copy|attachment|encl)/i.test(d)) designation = d;
-      break;
-    }
-  }
-  return { text, subject: subject.trim(), from, signatory, designation, pages };
-}
-// Does the letterhead name this office? (e.g. "BARANGAY ABBAG", "MUNICIPALITY OF MADDELA")
-function matchesOffice(head, o) {
-  const words = String(o.label || o.name || '').replace(/^(barangay|municipality of|sk of|provincial government of)\s+/i, '').split(' · ')[0].trim();
-  if (!words) return false;
-  const h = head.toUpperCase();
-  const kind = /^barangay/i.test(o.label) ? 'BARANGAY' : /^sk of/i.test(o.label) ? 'SANGGUNIANG KABATAAN' : /^municipality/i.test(o.label) ? 'MUNICIPAL' : '';
-  return h.includes(words.toUpperCase()) && (!kind || h.includes(kind));
 }

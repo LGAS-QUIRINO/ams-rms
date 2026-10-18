@@ -7,6 +7,7 @@ import { $, toast, bottomBand } from './ui.js';
 import { loginHtml } from './views/login.js';
 import { dashboardHtml } from './views/dashboard.js';
 import { MODULES } from './modules.js';
+import { DEMO_JO } from './seed.js';
 import { adminBar, notAdmin, roleLine, usersHtml, wireUsers, teamsHtml, wireTeams, lgusHtml, wireLgus } from './views/admin.js';
 
 const app = document.getElementById('app');
@@ -30,6 +31,11 @@ async function showLogin(error = '') {
   app.innerHTML = loginHtml(error);
   if (DEMO) {
     $('#demo-signin').addEventListener('click', async () => { await auth.demoSignIn(); enter(); });
+    // Demo Mode only: sign in as the sample JO account (added to Users & Roles the first time).
+    $('#demo-jo').addEventListener('click', async () => {
+      if (!(await store.list('users')).some((u) => u.id === DEMO_JO.id)) await store.save('users', DEMO_JO.id, DEMO_JO, 'setup');
+      await auth.demoSignIn('jo'); enter();
+    });
     return;
   }
   try { await auth.renderButton($('#gsi-btn')); }

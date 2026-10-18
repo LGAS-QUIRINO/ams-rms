@@ -51,8 +51,10 @@ export const auth = {
     g.accounts.id.renderButton(el, { theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', width: 300 });
     g.accounts.id.prompt();
   },
-  async demoSignIn() {
-    session = { email: 'admin@demo.ams', name: 'Demo Admin', token: 'demo', exp: Date.now() + 3650 * 864e5, signedAt: Date.now() };
+  // Demo Mode: the Demo Admin, or the sample JO account (who = 'jo').
+  async demoSignIn(who = 'admin') {
+    session = who === 'jo' ? { email: 'jo@demo.ams', name: 'MARIA B. SANTOS', token: 'demo', exp: Date.now() + 3650 * 864e5, signedAt: Date.now() }
+      : { email: 'admin@demo.ams', name: 'Demo Admin', token: 'demo', exp: Date.now() + 3650 * 864e5, signedAt: Date.now() };
     await db.put('meta', session, 'session');
   },
   // A fresh token for the server. Throws SIGNIN_NEEDED when Google needs the user to click again.

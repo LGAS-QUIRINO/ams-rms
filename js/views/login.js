@@ -16,7 +16,9 @@ export function loginHtml(error = '', busy = '') {
     <p class="office">COA QUIRINO</p>
     ${error ? `<div class="msg bad" role="alert">${esc(error)}</div>` : ''}
     ${busy ? `<p class="note"><b>${esc(busy)}</b></p>` : DEMO
-      ? `<button class="gbtn" type="button" id="demo-signin">${G_ICON} Sign in with Google</button>`
+      ? `<button class="gbtn" type="button" id="demo-signin">${G_ICON} Sign in with Google</button>
+         <button class="btn demo-jo" type="button" id="demo-jo">Sign in as Demo JO</button>
+         <p class="note">Demo only: the Google button opens the Demo Admin. Demo JO shows what a Job Order sees.</p>`
       : `<div id="gsi-btn"></div>`}
     <p class="note">Use the Gmail account registered for you by the Admin.<br>Only registered users can enter the system.</p>
     <div class="divider"></div>

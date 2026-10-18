@@ -45,5 +45,8 @@ export function seedData() {
 }
 
 // Demo Mode only: the one user you sign in as.
+// Demo Mode only: a sample Job Order account, to see what the JO sees.
+export const DEMO_JO = { id: 'user-demo-jo', email: 'jo@demo.ams', name: 'MARIA B. SANTOS', nickname: '', position: 'Job Order', designation: '',
+  roles: ['staff'], teamIds: ['team-2'], munIds: [], status: 'active' };
 export const DEMO_ADMIN = { id: 'user-demo-admin', email: 'admin@demo.ams', name: 'DEMO ADMIN', nickname: '', position: 'State Auditor I', designation: '',
   roles: ['member', 'admin'], teamIds: ['team-2'], munIds: [], status: 'active' };

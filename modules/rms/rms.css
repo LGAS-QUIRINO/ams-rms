@@ -90,3 +90,17 @@ ul.rcv-ck li.miss:before{content:"✗"; position:absolute; left:2px; color:var(-
 .kvrow > small{color:var(--muted)}
 .rcv-pdf{display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px; border:1px dashed #b9c4dc; border-radius:10px; background:#f8fafe}
 .rcv-pdf [hidden]{display:none !important}
+
+/* Groups, verification, history (18 Oct 2026) */
+.rep-grp{padding:8px 18px; background:#f6f8fc; border-top:1px solid var(--line); font-size:11.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--muted)}
+.rep-grp[hidden]{display:none}
+.mon thead tr.grp th{background:#eef2fa; color:var(--navy); border-bottom:0; border-left:2px solid #fff}
+td.c.verify{color:#1d4fb8; background:#eef4ff}
+.rcv-filter{display:flex; align-items:center; gap:8px; margin:0 0 14px; font-size:13px; font-weight:600; color:var(--muted)}
+.rcv-filter .input{width:auto; min-width:200px}
+.rcv-dec{display:flex; flex-direction:column; gap:6px; margin-top:4px}
+.rcv-dec [hidden]{display:none !important}
+ol.rcv-hist{margin:0; padding-left:18px; font-size:13px; line-height:1.55}
+ol.rcv-hist li.dec{font-weight:600}
+ol.rcv-hist small{color:var(--muted); font-weight:400}
+#g-items .txt{flex:1}

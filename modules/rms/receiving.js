@@ -1,6 +1,8 @@
-// Records Management · Receiving (agreed 17–18 Oct 2026).
-// Report Submission or Communication → checklist → tracking number (complete) or pending code (incomplete, for the auditor to
-// accept or reject) → small acknowledgment slip. Late documents are added to the same tracking number with their dates.
+// Records Management · Receiving (agreed 17–18 Oct 2026; For Verification rule agreed 18 Oct 2026).
+// Report Submission or Communication → checklist of what was submitted → tracking number at receipt → small acknowledgment slip.
+// Reports received by the JO are For Verification until an auditor accepts or rejects them. An auditor receiving on their own
+// account may accept, reject or leave it For Verification (bulk reports are always For Verification). Late documents are added to
+// the same tracking number with their dates, and the submission history keeps every step.
 import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { pdfToLines, parseDetails } from './pdfread.js';
@@ -10,8 +12,12 @@ const by = (refs) => refs.me?.data.email || '';
 const myName = (refs) => refs.me?.data.name || '';
 const missing = (i) => (i.checklist || []).filter((c) => !c.ok);
 
-// Who decides on incomplete submissions: ATL, Team Members, SA and Admin (not JO or OSA Staff).
+// Auditors who accept or reject: ATL, Team Members, SA and Admin (not JO or OSA Staff).
 export const canDecide = (refs) => hasRole(refs, 'atl', 'member', 'sa', 'admin');
+// Status helpers. Older records may still say 'pending' (= For Verification) or 'complete' (= accepted).
+export const isVerify = (i) => i.kind !== 'comm' && (i.status === 'verify' || i.status === 'pending');
+export const isAccepted = (i) => i.status === 'accepted' || i.status === 'complete';
+export const lacksDocs = (i) => i.kind !== 'comm' && i.status !== 'rejected' && missing(i).length > 0;
 
 /* ---------- numbers ---------- */
 // One running series per office per year, shared by reports and communications: MAD-ABB-RCI-2026-0012 / MAD-ABB-2026-0013.
@@ -23,23 +29,48 @@ function trackingNo(rms, office, reportCode, year) {
   const n = nextSeries(rms, office.id, year);
   return { trackingNo: [office.code, reportCode, year, String(n).padStart(4, '0')].filter(Boolean).join('-'), series: n, trackingYear: year, seriesKey: office.id };
 }
-// Pending codes for incomplete submissions: their own series per office, so tracking numbers stay for accepted ones only.
-function pendingCode(rms, office, reportCode) {
-  const n = Math.max(0, ...rms.items.filter((i) => i.officeId === office.id && i.pendingSeries).map((i) => i.pendingSeries)) + 1;
-  return { pendingCode: `${office.code}-${reportCode}-P-${String(n).padStart(4, '0')}`, pendingSeries: n };
-}
+// Older records may carry a pending code instead of a tracking number.
 export const numberOf = (i) => i.trackingNo || i.pendingCode || '';
 
+export function statusText(i) {
+  if (i.kind === 'comm') return 'Received';
+  if (isVerify(i)) return 'For Verification';
+  if (i.status === 'rejected') return 'Rejected';
+  if (isAccepted(i)) return missing(i).length ? 'Accepted – with missing documents' : 'Accepted';
+  return i.status || '';
+}
 export function statusPill(i) {
-  if (i.kind === 'comm') return pill('Received', 'blue');
-  if (i.status === 'complete') return pill('Complete', 'ok');
-  if (i.status === 'pending') return pill('Pending acceptance', 'warn');
-  if (i.status === 'accepted') return pill('Accepted – incomplete', 'warn');
-  if (i.status === 'rejected') return pill('Rejected', 'bad');
-  return pill(i.status || '');
+  const t = statusText(i);
+  return pill(t, t === 'Received' || t === 'For Verification' ? 'blue' : t === 'Accepted' ? 'ok' : t === 'Rejected' ? 'bad' : 'warn');
+}
+
+/* ---------- submission history ---------- */
+const ORD = ['1st', '2nd', '3rd'];
+const ordinal = (n) => ORD[n - 1] || n + 'th';
+// Every step of one record, oldest first: the first submission, each batch of late documents, and the auditor's decision.
+export function historyOf(i) {
+  const ck = i.checklist || [], total = ck.length;
+  const ev = [];
+  if (i.kind === 'comm') return [{ at: i.receivedAt, text: 'Received', who: i.receivedByName }];
+  let have = ck.filter((c) => c.ok && !c.late).length;
+  ev.push({ at: i.receivedAt, who: i.receivedByName, text: `1st submission · ${have} of ${total} document${total === 1 ? '' : 's'} submitted${have === total ? ' · all submitted' : ''}` });
+  const late = {};
+  ck.filter((c) => c.ok && c.late).forEach((c) => { (late[c.at] = late[c.at] || []).push(c); });
+  Object.keys(late).sort().forEach((at, k) => {
+    const got = late[at]; have += got.length;
+    ev.push({ at, who: got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${got.map((c) => c.item).join('; ')})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}` });
+  });
+  if (i.decision) ev.push({ at: i.decision.at, who: i.decision.byName, decision: true,
+    text: (i.decision.action === 'accept' ? 'Accepted' : 'Rejected') + (i.decision.remarks ? ' · ' + i.decision.remarks : '') });
+  return ev.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+export function historyHtml(i) {
+  return `<ol class="rcv-hist">${historyOf(i).map((e) => `<li class="${e.decision ? 'dec' : ''}"><b>${esc(fmtDT(e.at))}</b> · ${esc(e.text)}${e.who ? ` <small>by ${esc(e.who)}</small>` : ''}</li>`).join('')}</ol>`;
 }
 
 /* ================= Receiving page ================= */
+// The report group of an item (from the Report Library), or 'comm' for communications.
+export const groupOfItem = (rms, i) => i.kind === 'comm' ? 'comm' : (rms.reports.find((r) => r.id === i.reportId)?.groupId || '');
 export function receivingHtml(refs, rms, q) {
   const scopes = scopesFor(refs);
   if (!scopes.length) return `<div class="msg bad">No team is assigned to you yet. Ask the Admin to set your team in Users &amp; Roles.</div>`;
@@ -47,34 +78,40 @@ export function receivingHtml(refs, rms, q) {
   const offIds = new Set(offs.map((o) => o.id));
   const jo = jobOrderOnly(refs);
   const teams = refs.me ? (refs.me.data.teamIds || []) : [];
+  const g = q.get('g') || 'all';
+  const inGroup = (i) => g === 'all' || groupOfItem(rms, i) === (g === 'none' ? '' : g);
   const mine = rms.items.filter((i) => (offIds.has(i.officeId) || (!i.officeId && (teams.includes(i.teamId) || hasRole(refs, 'admin', 'sa', 'osa')))) && (!jo || i.receivedBy === by(refs)));
-  const recent = [...mine].sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 15);
-  const pending = canDecide(refs) ? rms.items.filter((i) => offIds.has(i.officeId) && i.status === 'pending') : [];
-  const lacking = rms.items.filter((i) => offIds.has(i.officeId) && i.status === 'accepted');
+  const recent = mine.filter(inGroup).sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 30);
+  const verify = canDecide(refs) ? rms.items.filter((i) => offIds.has(i.officeId) && isVerify(i) && inGroup(i)) : [];
+  const lacking = rms.items.filter((i) => offIds.has(i.officeId) && lacksDocs(i) && !isVerify(i) && inGroup(i));
   const off = (id) => offs.find((o) => o.id === id);
   const rep = (id) => rms.reports.find((r) => r.id === id);
   const what = (i) => i.kind === 'comm' ? 'Communication · ' + esc(i.subject || '') : esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period));
-  const cols = 'grid-template-columns:minmax(190px,1.2fr) minmax(170px,1fr) 120px 150px 150px';
+  const cols = 'grid-template-columns:minmax(190px,1.2fr) minmax(170px,1fr) 120px 170px 170px';
   const row = (i, acts) => `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span>
     <span>${esc(i.kind === 'comm' && !i.officeId ? i.fromOutside : off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
     <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span>${statusPill(i)}</span><span class="acts">${acts}</span></div>`;
-  return `<div class="hello"><div><h1>Receiving</h1><p>Record what the offices submit. Complete submissions get a tracking number; incomplete ones get a pending code for the auditor to accept or reject.</p></div>
+  const groups = rms.groups || [];
+  const gOpt = (v, t) => `<option value="${esc(v)}" ${g === v ? 'selected' : ''}>${esc(t)}</option>`;
+  return `<div class="hello"><div><h1>Receiving</h1><p>Record what the offices submit. Every receipt gets its tracking number right away. Reports received by the JO are For Verification until an auditor accepts or rejects them.</p></div>
       <button class="btn primary" type="button" id="rcv-new">+ Receive Documents</button></div>
-    ${pending.length ? `<section class="panel"><div class="panel-head"><h2>Waiting for the Auditor's Decision · ${pending.length}</h2></div>
-      <div class="t-head" style="${cols}"><span>Pending Code</span><span>Office · Report</span><span>Received</span><span>Missing</span><span></span></div>
-      ${pending.map((i) => `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(i.pendingCode)}</b></span><span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
-        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${missing(i).map((c) => esc(c.item)).join('; ')}</small></span>
-        <span class="acts"><button class="btn sm primary" data-decide="${i.id}">Accept / Reject</button></span></div>`).join('')}</section>` : ''}
+    <div class="rcv-filter"><label for="rcv-g">Group</label><select class="input" id="rcv-g">${gOpt('all', 'All groups')}${groups.map((x) => gOpt(x.id, x.name)).join('')}${gOpt('none', 'No group')}${gOpt('comm', 'Communications')}</select></div>
+    ${verify.length ? `<section class="panel"><div class="panel-head"><h2>For Verification · ${verify.length}</h2></div>
+      <div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Report</span><span>Received</span><span>Documents</span><span></span></div>
+      ${verify.map((i) => { const m = missing(i), n = (i.checklist || []).length; return `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span><span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
+        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${n - m.length} of ${n} submitted${m.length ? '<br>Missing: ' + m.map((c) => esc(c.item)).join('; ') : ''}</small></span>
+        <span class="acts"><button class="btn sm primary" data-decide="${i.id}">Accept / Reject</button><button class="btn sm" data-view="${i.id}">View</button></span></div>`; }).join('')}</section>` : ''}
     ${lacking.length ? `<section class="panel"><div class="panel-head"><h2>Accepted, Still Missing Documents · ${lacking.length}</h2></div>
-      ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button>`)).join('')}</section>` : ''}
+      ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
     <section class="panel"><div class="panel-head"><h2>${jo ? 'Received by You' : 'Recently Received'}</h2></div>
-      ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No. / Pending Code</span><span>Office · Item</span><span>Received</span><span>Status</span><span></span></div>
-        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button><button class="btn sm" data-slip="${i.id}">Slip</button>`)).join('')}`
-        : '<div class="empty"><b>Nothing received yet</b>Use + Receive Documents to record the first submission.</div>'}</section>`;
+      ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Item</span><span>Received</span><span>Status</span><span></span></div>
+        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button><button class="btn sm" data-slip="${i.id}">Slip</button>${lacksDocs(i) ? `<button class="btn sm" data-late="${i.id}">Late Docs</button>` : ''}`)).join('')}`
+        : `<div class="empty"><b>${g === 'all' ? 'Nothing received yet' : 'Nothing received in this group'}</b>${g === 'all' ? 'Use + Receive Documents to record the first submission.' : 'Choose All groups to see everything.'}</div>`}</section>`;
 }
 
 export function wireReceiving(refs, rms, q, rerender) {
   $('#rcv-new').onclick = () => receiveForm(refs, rms);
+  const gs = $('#rcv-g'); if (gs) gs.onchange = () => { location.hash = '#/rms/receiving' + (gs.value === 'all' ? '' : '?g=' + encodeURIComponent(gs.value)); };
   $$('[data-decide]').forEach((b) => { b.onclick = () => decide(refs, rms, b.dataset.decide); });
   $$('[data-late]').forEach((b) => { b.onclick = () => addLate(refs, rms, b.dataset.late); });
   $$('[data-view]').forEach((b) => { b.onclick = () => viewItem(refs, rms, b.dataset.view); });
@@ -88,6 +125,8 @@ async function receiveForm(refs, rms) {
   const offs = visibleOffices(refs, rms, scopes.map((s) => s.id));
   const label = (s) => s.data.kind === 'province' ? 'Province of Quirino' : s.data.name;
   const now = new Date(), year = now.getFullYear();
+  const auditor = canDecide(refs);
+  const groupName = (id) => (rms.groups || []).find((x) => x.id === id)?.name || '';
   let out = null;
   const res = await modal({
     title: 'Receive Documents', wide: true,
@@ -101,6 +140,10 @@ async function receiveForm(refs, rms) {
         <div class="two"><div class="field"><label for="f-rep">Report</label><select class="input" id="f-rep"></select></div>
           <div class="field"><label for="f-per">Period</label><select class="input" id="f-per"></select><span class="hint" id="f-due"></span></div></div>
         <div><span class="legend">Checklist · tick what was actually submitted</span><div id="f-list" class="rcv-list"></div><span class="hint" id="f-state"></span></div>
+        <div id="f-dec" class="rcv-dec">${auditor ? `<span class="legend">Your decision</span>
+          <div class="rcv-type"><label><input type="radio" name="rdec" value="verify" checked> For Verification</label><label><input type="radio" name="rdec" value="accept"> Accept</label><label><input type="radio" name="rdec" value="reject"> Reject</label></div>
+          <div class="field" id="f-drem-box" hidden><label for="f-drem">Decision remarks <span id="f-dreq">(required for a rejection)</span></label><input class="input" id="f-drem" placeholder="e.g. Accepted; DVs to follow within 5 days"></div>` : ''}
+          <span class="hint" id="f-dec-hint"></span></div>
       </div>
       <div id="comm-part" hidden>
 
@@ -127,7 +170,13 @@ async function receiveForm(refs, rms) {
       const fillReports = () => {
         const o = office();
         const reps = o ? rms.reports.filter((r) => r.active !== false && (o.reportIds || []).includes(r.id)).sort((a, b) => a.code.localeCompare(b.code)) : [];
-        $('#f-rep', bg).innerHTML = reps.map((r) => `<option value="${r.id}">${esc(r.code + ' · ' + r.name)}</option>`).join('') || '<option value="">No reports ticked for this office</option>';
+        // Grouped by the team's report groups, in the order set in the Report Library.
+        const order = [...(rms.groups || []).map((x) => x.id), ''];
+        const opt = (r) => `<option value="${r.id}">${esc(r.code + ' · ' + r.name)}</option>`;
+        const anyGroup = reps.some((r) => r.groupId && groupName(r.groupId));
+        $('#f-rep', bg).innerHTML = (anyGroup ? order.map((gid) => { const list = reps.filter((r) => (groupName(r.groupId) ? r.groupId : '') === gid);
+          return list.length ? `<optgroup label="${esc(gid ? groupName(gid) : 'No group')}">${list.map(opt).join('')}</optgroup>` : ''; }).join('') : reps.map(opt).join(''))
+          || '<option value="">No reports ticked for this office</option>';
         // Usual submitters of this office, to pick from.
         const names = [...new Set(rms.items.filter((i) => o && i.officeId === o.id && i.submittedBy).map((i) => i.submittedBy + '|' + (i.submittedDesignation || '')))];
         $('#f-by-list', bg).innerHTML = names.map((n) => `<option value="${esc(n.split('|')[0])}">${esc(n.split('|')[1])}</option>`).join('');
@@ -149,15 +198,28 @@ async function receiveForm(refs, rms) {
           + `<div class="btn-row"><button type="button" class="btn sm" id="f-all">Tick all</button></div>`;
         $('#f-all', bg).onclick = () => { $$('input[name=ck]', bg).forEach((x) => { x.checked = true; }); state(); };
         $$('input[name=ck]', bg).forEach((x) => { x.onchange = state; });
-        dueHint(); state();
+        dueHint(); state(); decState();
       };
       const dueHint = () => { const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value); const p = $('#f-per', bg).value; const d = r && p ? dueDate(r, p) : null;
         $('#f-due', bg).textContent = d ? `Due ${fmtDate(d)}${now > d ? ' · this is late' : ''}` : ''; };
       const state = () => {
         const all = $$('input[name=ck]', bg), ticked = all.filter((x) => x.checked).length;
-        $('#f-state', bg).innerHTML = !all.length ? '' : ticked === all.length ? '<b class="ok-t">Complete</b> · a tracking number will be given.'
-          : `<b class="warn-t">Incomplete</b> (${all.length - ticked} missing) · a pending code will be given for the auditor to accept or reject.`;
+        $('#f-state', bg).innerHTML = !all.length ? '' : ticked === all.length ? `<b class="ok-t">All ${all.length} submitted</b>`
+          : `<b class="warn-t">${ticked} of ${all.length} submitted</b> · ${all.length - ticked} missing`;
       };
+      // The decision at receipt: JO and OSA Staff always For Verification; auditors choose, except for bulk reports.
+      const decState = () => {
+        const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
+        const bulk = !!(r && r.bulk);
+        $$('input[name=rdec]', bg).forEach((x) => { x.closest('.rcv-type').hidden = bulk; });
+        if (bulk) { const v = $('input[name=rdec][value=verify]', bg); if (v) v.checked = true; }
+        const choice = $('input[name=rdec]:checked', bg)?.value || 'verify';
+        if ($('#f-drem-box', bg)) { $('#f-drem-box', bg).hidden = choice === 'verify'; $('#f-dreq', bg).hidden = choice !== 'reject'; }
+        $('#f-dec-hint', bg).textContent = bulk ? `${r.code} is a bulk report: it is always recorded For Verification, for the auditor to go through its contents.`
+          : !auditor ? 'It will be recorded For Verification. An auditor accepts or rejects it.'
+          : choice === 'verify' ? 'Recorded For Verification; you or another auditor accept or reject it later.' : '';
+      };
+      $$('input[name=rdec]', bg).forEach((x) => { x.onchange = decState; });
       const kindState = () => { const k = kind(); $('#rep-part', bg).hidden = k !== 'report'; $('#comm-part', bg).hidden = k !== 'comm'; };
       $$('input[name=kind]', bg).forEach((x) => { x.onchange = kindState; });
       $('#f-outside', bg).onchange = () => { const o = $('#f-outside', bg).checked; $('#f-outside-box', bg).hidden = !o; $('#f-mun', bg).disabled = o; $('#f-off', bg).disabled = o; };
@@ -167,7 +229,8 @@ async function receiveForm(refs, rms) {
       if (ready) $('#f-mun', bg).value = ready.id;
       $('#f-mun', bg).onchange = () => { try { localStorage.setItem('rms-last-mun', $('#f-mun', bg).value); } catch (e) { /* ignore */ } fillOffices(); };
       $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = dueHint;
-      $('#f-by', bg).onchange = () => { const opt = [...$('#f-by-list', bg).options].find((x) => x.value === $('#f-by', bg).value); if (opt && !$('#f-des', bg).value) $('#f-des', bg).value = opt.textContent; };
+      // Picking a usual submitter fills in the designation right away (not on leaving the field).
+      $('#f-by', bg).oninput = () => { const opt = [...$('#f-by-list', bg).options].find((x) => x.value === $('#f-by', bg).value); if (opt && !$('#f-des', bg).value) $('#f-des', bg).value = opt.textContent; };
       // Upload PDF to fill in (reports and communications). Scanned PDFs are read only when the receiver asks.
       let pdfFile = null;
       const applyPdf = async (allowOcr) => {
@@ -225,10 +288,14 @@ async function receiveForm(refs, rms) {
         if (!ticked.size) { toast('Tick at least one document received.', 'bad'); return false; }
         const at = base.receivedAt;
         const checklist = items.map((t, k) => ({ item: t, ok: ticked.has(k), at: ticked.has(k) ? at : '' }));
-        const complete = checklist.every((c) => c.ok);
+        const allIn = checklist.every((c) => c.ok);
         const yr = +period.slice(0, 4);
-        out = { ...base, reportId: r.id, reportCode: r.code, period, checklist, status: complete ? 'complete' : 'pending',
-          ...(complete ? { ...trackingNo(rms, o, r.code, yr), completedAt: at } : pendingCode(rms, o, r.code)) };
+        const choice = auditor && !r.bulk ? ($('input[name=rdec]:checked', bg)?.value || 'verify') : 'verify';
+        const dRem = $('#f-drem', bg) ? $('#f-drem', bg).value.trim() : '';
+        if (choice === 'reject' && !dRem) { toast('Enter the reason for rejecting it.', 'bad'); return false; }
+        out = { ...base, reportId: r.id, reportCode: r.code, period, checklist, ...trackingNo(rms, o, r.code, yr), ...(allIn ? { completedAt: at } : {}),
+          status: choice === 'accept' ? 'accepted' : choice === 'reject' ? 'rejected' : 'verify',
+          ...(choice === 'verify' ? {} : { decision: { action: choice, remarks: dRem, by: by(refs), byName: myName(refs), at } }) };
       } else {
         const subject = $('#f-subj', bg).value.trim();
         if (!subject) { toast('Enter the subject or a short description.', 'bad'); return false; }
@@ -247,9 +314,10 @@ async function receiveForm(refs, rms) {
   await store.save('rms_items', id, out, by(refs));
   const saved = { id, ...out };
   const again = await modal({
-    title: out.trackingNo ? 'Saved · Tracking Number' : 'Saved · Pending Code',
-    body: `<div class="rcv-done ${out.trackingNo ? '' : 'pend'}"><small>${out.trackingNo ? 'TRACKING NUMBER' : 'PENDING CODE'}</small><b>${esc(numberOf(out))}</b></div>
-      <p>${out.trackingNo ? 'Write this number on the RECEIVED stamp, then print the slip for the submitter.' : 'Incomplete. Write this code on the RECEIVED stamp and print the slip. The auditor will accept or reject it; a tracking number is given once accepted.'}</p>`,
+    title: 'Saved · Tracking Number',
+    body: `<div class="rcv-done"><small>TRACKING NUMBER</small><b>${esc(numberOf(out))}</b></div>
+      <p>Status: ${statusPill(out)}</p>
+      <p>Write this number on the RECEIVED stamp, then print the slip for the submitter.${isVerify(out) ? ' An auditor will accept or reject it.' : ''}</p>`,
     buttons: [{ label: 'Done', value: null }, { label: 'Receive Another', value: 'again' }, { label: 'Print Slip', cls: 'primary', value: 'slip' }]
   });
   if (again === 'slip') printSlip(refs, rms, saved);
@@ -262,10 +330,10 @@ async function decide(refs, rms, id) {
   const off = visibleOffices(refs, rms, scopesFor(refs).map((s) => s.id)).find((o) => o.id === i.officeId);
   let out = null;
   const res = await modal({
-    title: 'Accept or Reject · ' + i.pendingCode,
+    title: 'Accept or Reject · ' + numberOf(i),
     body: `<p><b>${esc(off?.label || '')}</b> · ${esc(i.reportCode + ' · ' + periodLabel(i.period))}<br><small>Received ${esc(fmtDT(i.receivedAt))} by ${esc(i.receivedByName)} · received from ${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</small></p>
-      <div><span class="legend">Checklist</span><ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}</li>`).join('')}</ul></div>
-      <div class="rcv-type"><label><input type="radio" name="dec" value="accept" checked> Accept – give it a tracking number (missing documents to follow)</label><label><input type="radio" name="dec" value="reject"> Reject – return to the submitter</label></div>
+      <div><span class="legend">Checklist · ${i.checklist.filter((c) => c.ok).length} of ${i.checklist.length} submitted</span><ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`).join('')}</ul></div>
+      <div class="rcv-type"><label><input type="radio" name="dec" value="accept" checked> Accept${missing(i).length ? ' – missing documents to follow' : ''}</label><label><input type="radio" name="dec" value="reject"> Reject – return to the submitter</label></div>
       <div class="field"><label for="d-rem">Remarks <span id="d-req" hidden>(required for a rejection)</span></label><input class="input" id="d-rem" placeholder="e.g. Accepted; DVs to follow within 5 days"></div>`,
     onOpen: (bg) => { $$('input[name=dec]', bg).forEach((x) => { x.onchange = () => { $('#d-req', bg).hidden = x.value !== 'reject' || !x.checked; }; }); },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save Decision', cls: 'primary', value: 'save', check: (bg) => {
@@ -278,9 +346,10 @@ async function decide(refs, rms, id) {
   const decision = { action: out.action, remarks: out.remarks, by: by(refs), byName: myName(refs), at: new Date().toISOString() };
   const { id: _x, ...data } = i;
   if (out.action === 'accept') {
-    const t = trackingNo(rms, { id: i.officeId, code: i.officeCode }, i.reportCode, +i.period.slice(0, 4));
+    // Older records received before this rule may still need their tracking number.
+    const t = data.trackingNo ? {} : trackingNo(rms, { id: i.officeId, code: i.officeCode }, i.reportCode, +i.period.slice(0, 4));
     await store.save('rms_items', id, { ...data, ...t, status: 'accepted', decision }, by(refs));
-    toast(`Accepted. Tracking number ${t.trackingNo}.`, 'ok');
+    toast(`Accepted · ${t.trackingNo || data.trackingNo}.`, 'ok');
   } else {
     await store.save('rms_items', id, { ...data, status: 'rejected', decision }, by(refs));
     toast('Rejected and recorded. The period still counts as not submitted.', 'ok');
@@ -292,7 +361,7 @@ async function addLate(refs, rms, id) {
   const i = rms.items.find((x) => x.id === id);
   let picked = null;
   const res = await modal({
-    title: 'Add Late Documents · ' + i.trackingNo,
+    title: 'Add Late Documents · ' + numberOf(i),
     body: `<p>Tick the missing documents received now. Today's date is recorded for each.</p>
       <div class="rcv-list">${i.checklist.map((c, k) => c.ok ? `<label class="done">✓ ${esc(c.item)} <small>received ${esc(fmtDate(c.at))}</small></label>` : `<label><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')}</div>`,
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save', cls: 'primary', value: 'save', check: (bg) => {
@@ -301,11 +370,12 @@ async function addLate(refs, rms, id) {
   });
   if (res !== 'save') return;
   const at = new Date().toISOString();
-  const checklist = i.checklist.map((c, k) => picked.includes(k) ? { ...c, ok: true, at, late: true, by: by(refs) } : c);
+  const checklist = i.checklist.map((c, k) => picked.includes(k) ? { ...c, ok: true, at, late: true, by: by(refs), byName: myName(refs) } : c);
   const done = checklist.every((c) => c.ok);
   const { id: _x, ...data } = i;
-  await store.save('rms_items', id, { ...data, checklist, status: done ? 'complete' : 'accepted', ...(done ? { completedAt: at } : {}) }, by(refs));
-  toast(done ? 'All documents received. Now complete.' : 'Saved. Still missing some documents.', 'ok');
+  // The status (For Verification / Accepted) stays; the history shows this as the next submission.
+  await store.save('rms_items', id, { ...data, checklist, ...(done ? { completedAt: at } : {}) }, by(refs));
+  toast(done ? 'Saved. All documents are now submitted.' : 'Saved. Still missing some documents.', 'ok');
 }
 
 /* ---------- view one item ---------- */
@@ -319,7 +389,7 @@ function viewItem(refs, rms, id) {
     ${row('Received from', esc(i.submittedBy) + (i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''))}
     ${i.pendingCode && i.trackingNo ? row('Pending code', `<span class="mono">${esc(i.pendingCode)}</span>`) : ''}
     ${i.checklist ? row('Checklist', `<ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`).join('')}</ul>`) : ''}
-    ${i.decision ? row('Decision', `${i.decision.action === 'accept' ? 'Accepted' : 'Rejected'} by ${esc(i.decision.byName)} · ${esc(fmtDT(i.decision.at))}${i.decision.remarks ? '<br><small>' + esc(i.decision.remarks) + '</small>' : ''}`) : ''}
+    ${row('History', historyHtml(i))}
     ${i.remarks ? row('Remarks', esc(i.remarks)) : ''}` });
 }
 
@@ -330,7 +400,7 @@ export function printSlip(refs, rms, i) {
   const teamLine = team ? (team.officeCode ? 'Audit Team ' + team.officeCode : team.name) + ' · Province of Quirino' : 'Province of Quirino';
   const rep = rms.reports.find((r) => r.id === i.reportId);
   const okList = (i.checklist || []).filter((c) => c.ok), miss = (i.checklist || []).filter((c) => !c.ok);
-  const pend = !i.trackingNo;
+  const pend = !i.trackingNo, ver = isVerify(i);
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(numberOf(i))}</title><style>
     @page{size:letter; margin:0.4in} body{margin:0; font-family:Arial,Helvetica,sans-serif; color:#111}
     .slip{width:4.25in; min-height:5.5in; padding:0.22in 0.26in; box-sizing:border-box; font-size:9.5pt; line-height:1.3; display:flex; flex-direction:column; border:1px dashed #aaa}
@@ -351,10 +421,12 @@ export function printSlip(refs, rms, i) {
       ${i.kind === 'comm' ? `<span>Subject</span><span>${esc(i.subject)}${i.pages ? ' · ' + esc(i.pages) : ''}</span>` : `<span>Report</span><span>${esc((rep?.name || i.reportCode) + ' · ' + periodLabel(i.period))}</span>`}
       <span>Received</span><span>${esc(new Date(i.receivedAt).toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span>
       <span>Received from</span><span>${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</span></div>
-    ${i.kind === 'report' ? `<div class="sec">RECEIVED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}${c.late ? ' (' + esc(fmtDate(c.at)) + ')' : ''}</li>`).join('')}</ul>
+    ${i.kind === 'report' ? `<div class="sec">SUBMITTED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}${c.late ? ' (' + esc(fmtDate(c.at)) + ')' : ''}</li>`).join('')}</ul>
       <div class="sec">MISSING</div><ul>${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>
-      ${pend ? `<div class="note">Incomplete. Subject to the Auditor's acceptance. Please submit the missing documents; a tracking number is given once accepted.</div>` : ''}` : ''}
-    <div class="foot"><span>Status: <b>${i.kind === 'comm' ? 'Received' : i.status === 'complete' ? 'Complete' : i.status === 'rejected' ? 'Rejected' : 'Incomplete'}</b></span><div class="sig"><b>${esc(i.receivedByName)}</b><br>Received by</div></div>
+      ${ver ? `<div class="note">Received subject to verification by the Auditor.${miss.length ? ' Please submit the missing documents, quoting this tracking number.' : ''}</div>`
+        : miss.length && i.status !== 'rejected' ? `<div class="note">Please submit the missing documents, quoting this tracking number.</div>` : ''}
+      ${i.status === 'rejected' && i.decision?.remarks ? `<div class="note">Rejected: ${esc(i.decision.remarks)}</div>` : ''}` : ''}
+    <div class="foot"><span>Status: <b>${esc(statusText(i))}</b></span><div class="sig"><b>${esc(i.receivedByName)}</b><br>Received by</div></div>
     </div><script>window.onload=()=>{window.focus();window.print();}<\/script></body></html>`;
   const w = window.open('', '_blank');
   if (!w) return toast('Allow pop-ups for this site to print the slip.', 'bad');

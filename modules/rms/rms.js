@@ -4,7 +4,7 @@ import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { roleLine } from '../../js/views/admin.js';
 import { moduleFrame } from '../../js/frame.js';
-import { receivingHtml, wireReceiving, numberOf, statusPill } from './receiving.js';
+import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml } from './receiving.js';
 
 // Load this module's look once.
 if (!document.querySelector('link[data-rms]')) {
@@ -45,10 +45,12 @@ function canEditMun(refs, munTeamId, munId) {
 
 /* ---------- data ---------- */
 async function loadRms() {
-  const [reports, offices, items, settings] = await Promise.all([store.list('rms_reports'), store.list('rms_offices'), store.list('rms_items'), store.get('rms_settings', 'office')]);
+  const [reports, offices, items, settings, groups] = await Promise.all([store.list('rms_reports'), store.list('rms_offices'), store.list('rms_items'), store.get('rms_settings', 'office'), store.get('rms_settings', 'groups')]);
   const now = new Date();
   return { reports: reports.map((r) => ({ id: r.id, ...r.data })), offices: offices.map((o) => ({ id: o.id, ...o.data })),
     items: items.map((i) => ({ id: i.id, ...i.data })),
+    // Report groups made by the team (Report Library), in their set order.
+    groups: (groups && groups.data && groups.data.list) || [],
     startPeriod: (settings && settings.data && settings.data.startPeriod) || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` };
 }
 const dueText = (r) => !r.due || r.due.kind === 'none' ? 'No set due date'
@@ -88,7 +90,7 @@ export const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { mont
 export const fmtDT = (d) => d ? new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 
 // Status of one office's report for one period:
-// untracked (before monitoring starts) · nodue · notdue · complete · late · incomplete · overdue
+// untracked (before monitoring starts) · nodue · notdue · verify · complete · late · incomplete · overdue
 function cellStatus(rms, office, r, p, now = new Date()) {
   { const [y, , e] = span(p); if (`${y}-${String(e).padStart(2, '0')}` < rms.startPeriod) return { s: 'untracked' }; }
   // Rejected submissions do not count; the latest of the rest decides.
@@ -96,15 +98,17 @@ function cellStatus(rms, office, r, p, now = new Date()) {
     .sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt)))[0];
   const due = dueDate(r, p);
   if (got) {
-    if (got.status !== 'complete') return { s: 'incomplete', item: got, due };
+    if (isVerify(got)) return { s: 'verify', item: got, due };
+    if (lacksDocs(got)) return { s: 'incomplete', item: got, due };
     return { s: due && new Date(got.completedAt || got.receivedAt) > due ? 'late' : 'complete', item: got, due };
   }
   const [y, , b] = span(p);
   if (!due) return { s: new Date(y, b, 0) < now ? 'nodue' : 'notdue', due };
   return { s: now > due ? 'overdue' : 'notdue', due };
 }
-const MARK = { complete: '✓', late: 'L', incomplete: '½', overdue: '!', notdue: '·', untracked: '—', nodue: '·' };
-const STATUS_TEXT = { complete: 'Complete', late: 'Complete, received late', incomplete: 'Incomplete', overdue: 'Overdue', notdue: 'Not yet due', untracked: 'Before monitoring started', nodue: 'Not yet submitted (no set due date)' };
+const MARK = { complete: '✓', late: 'L', verify: 'V', incomplete: '½', overdue: '!', notdue: '·', untracked: '—', nodue: '·' };
+const STATUS_TEXT = { complete: 'Accepted, all submitted', late: 'Accepted, all submitted but late', verify: 'Received, for verification', incomplete: 'Accepted, missing documents', overdue: 'Overdue', notdue: 'Not yet due', untracked: 'Before monitoring started', nodue: 'Not yet submitted (no set due date)' };
+const STATUS_PILL = { complete: 'ok', late: 'late', verify: 'blue', incomplete: 'warn', overdue: 'bad' };
 
 // The auditees of a municipality (or the Province), in display order, each with its main office and any extra offices.
 function auditeesOf(refs, rms, scopeId) {
@@ -176,7 +180,7 @@ export async function render(ctx) {
   const overdue = jo ? [] : overdueAll(refs, rms, year);
   const crumbs = { overview: 'Overview', monitor: 'Submission Monitor', library: 'Report Library', offices: 'Office Setup', receiving: 'Receiving' };
   const offIds = new Set(visibleOffices(refs, rms, scopesFor(refs).map((s) => s.id)).map((o) => o.id));
-  const pendingN = jo ? 0 : rms.items.filter((i) => i.status === 'pending' && offIds.has(i.officeId)).length;
+  const pendingN = jo ? 0 : rms.items.filter((i) => isVerify(i) && offIds.has(i.officeId)).length;
   const body = view === 'receiving' ? receivingHtml(refs, rms, q)
     : view === 'monitor' ? monitorHtml(refs, rms, q)
     : view === 'library' ? libraryHtml(refs, rms, q)
@@ -204,7 +208,9 @@ function overviewHtml(refs, rms, overdue) {
   const now = new Date(), ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const mine = rms.items.filter((i) => offIds.has(i.officeId));
   const thisMonth = mine.filter((i) => String(i.receivedAt).slice(0, 7) === ym).length;
-  const incomplete = mine.filter((i) => i.status === 'pending' || i.status === 'accepted');
+  const verify = mine.filter(isVerify);
+  const lacking = mine.filter((i) => lacksDocs(i) && !isVerify(i));
+  const incomplete = [...verify, ...lacking];
   const teamNames = [...new Set(myTeams(refs).map((t) => refs.team[t]?.data.name).filter(Boolean))].join(', ');
   const recent = [...mine].sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 8);
   const rep = (id) => rms.reports.find((r) => r.id === id);
@@ -219,7 +225,7 @@ function overviewHtml(refs, rms, overdue) {
       <div class="btn-row"><a class="btn" href="#/rms/monitor">Open Submission Monitor</a><a class="btn primary" href="#/rms/receiving?new=1">+ Receive Documents</a></div></div>
     <div class="stats">
       <div class="stat"><span>Received This Month</span><b>${thisMonth}</b><small>tracking numbers issued</small></div>
-      <div class="stat"><span>Incomplete</span><b class="${incomplete.length ? 'warn' : ''}">${incomplete.length}</b><small>pending acceptance or missing documents</small></div>
+      <a class="stat" href="#/rms/receiving"><span>For Verification</span><b class="${verify.length ? 'warn' : ''}">${verify.length}</b><small>${lacking.length} accepted with missing documents</small></a>
       <a class="stat" href="#/rms/monitor?show=overdue"><span>Overdue</span><b class="${overdue.length ? 'bad' : ''}">${overdue.length}</b><small>past due, not yet submitted</small></a>
       <div class="stat"><span>Borrowed Out</span><b class="dim">—</b><small>comes with the Borrow Log</small></div>
     </div>
@@ -233,7 +239,7 @@ function overviewHtml(refs, rms, overdue) {
       <section class="panel">
         <div class="panel-head"><h2>Needs Attention</h2></div>
         ${top.map((g) => `<a class="actrow" href="#/rms/monitor?r=${encodeURIComponent(g.r.id)}&y=${g.p.slice(0, 4)}&show=overdue"><b>${g.n} office${g.n > 1 ? "s" : ""}</b> ${g.n > 1 ? "have" : "has"} not submitted their ${esc(periodLabel(g.p))} ${esc(g.r.code)}.<small>Overdue since ${esc(fmtDate(dueDate(g.r, g.p)))} · consider demand letters</small></a>`).join('')}
-        ${incomplete.slice(0, 3).map((i) => `<a class="actrow" href="#/rms/receiving"><b class="mono">${esc(numberOf(i))}</b> ${i.status === 'pending' ? 'waits for the auditor to accept or reject it' : 'is still missing documents'}.<small>${esc(office(i.officeId)?.label || '')} · received ${esc(fmtDate(i.receivedAt))}</small></a>`).join('')}
+        ${incomplete.slice(0, 3).map((i) => `<a class="actrow" href="#/rms/receiving"><b class="mono">${esc(numberOf(i))}</b> ${isVerify(i) ? 'is waiting for verification by the auditor' : 'is still missing documents'}.<small>${esc(office(i.officeId)?.label || '')} · received ${esc(fmtDate(i.receivedAt))}</small></a>`).join('')}
         ${noCode ? `<a class="actrow" href="#/rms/setup/offices"><b>${noCode} auditee${noCode > 1 ? 's' : ''}</b> still ${noCode > 1 ? 'have' : 'has'} no office code.<small>Office Setup</small></a>` : ''}
         ${!rms.reports.length ? `<a class="actrow" href="#/rms/setup/library"><b>The Report Library is empty.</b><small>The Admin or SA Staff add the reports first.</small></a>` : ''}
         ${!top.length && !incomplete.length && !noCode && rms.reports.length ? '<div class="empty"><b>All clear</b>Nothing needs attention right now.</div>' : ''}
@@ -241,11 +247,28 @@ function overviewHtml(refs, rms, overdue) {
     </div>`;
 }
 
+/* ---------- report groups ---------- */
+// The group name of a report ('' when it has none, or its group was removed).
+const groupName = (rms, r) => rms.groups.find((g) => g.id === r.groupId)?.name || '';
+// Reports in group order (as set in the Report Library), then by code; ungrouped last.
+function byGroup(rms, reports) {
+  const rank = (r) => { const k = rms.groups.findIndex((g) => g.id === r.groupId); return k < 0 ? 1e6 : k; };
+  return [...reports].sort((a, b) => rank(a) - rank(b) || a.code.localeCompare(b.code));
+}
+// <option>s grouped under <optgroup> headings when groups are in use.
+function groupedOptions(rms, reports, selected) {
+  const opt = (x) => `<option value="${x.id}" ${x.id === selected ? 'selected' : ''}>${esc(x.code + ' · ' + x.name)}</option>`;
+  if (!reports.some((r) => groupName(rms, r))) return reports.map(opt).join('');
+  const out = []; let cur = null;
+  byGroup(rms, reports).forEach((r) => { const g = groupName(rms, r) || 'No group'; if (g !== cur) { if (cur !== null) out.push('</optgroup>'); out.push(`<optgroup label="${esc(g)}">`); cur = g; } out.push(opt(r)); });
+  return out.join('') + '</optgroup>';
+}
+
 /* ================= Submission Monitor ================= */
 function monitorHtml(refs, rms, q) {
   const scopes = scopesFor(refs);
   if (!scopes.length) return `<div class="msg bad">No team is assigned to you yet. Ask the Admin to set your team in Users &amp; Roles.</div>`;
-  const reports = rms.reports.filter((r) => r.active !== false && r.frequency !== 'As needed').sort((a, b) => a.code.localeCompare(b.code));
+  const reports = byGroup(rms, rms.reports.filter((r) => r.active !== false && r.frequency !== 'As needed'));
   if (!reports.length) return `<div class="hello"><div><h1>Submission Monitor</h1><p>Which office submitted what, period by period.</p></div></div>
     <section class="panel"><div class="empty"><b>No reports to monitor yet</b>The Admin or SA Staff add reports in the Report Library, and the teams tick them for their offices in Office Setup.</div></section>`;
   const scopeId = q.get('m') === 'all' || !q.get('m') ? 'all' : (scopes.some((s) => s.id === q.get('m')) ? q.get('m') : 'all');
@@ -265,7 +288,11 @@ function monitorHtml(refs, rms, q) {
   let rows = offs.filter((o) => columns.some((c) => (o.reportIds || []).includes(c.r.id)));
   const cells = (o) => columns.map((c) => (o.reportIds || []).includes(c.r.id) && c.p ? { c, st: cellStatus(rms, o, c.r, c.p, now) } : { c, st: null });
   const grid = rows.map((o) => ({ o, cs: cells(o) }));
-  const shown = grid.filter((g) => show === 'overdue' ? g.cs.some((x) => x.st && x.st.s === 'overdue') : show === 'incomplete' ? g.cs.some((x) => x.st && x.st.s === 'incomplete') : true);
+  const shown = grid.filter((g) => show === 'all' ? true : g.cs.some((x) => x.st && x.st.s === show));
+  // By Report: a heading row naming each report group over its columns.
+  const groupRow = mode === 'report' && reports.some((x) => groupName(rms, x)) ? (() => {
+    const spans = []; columns.forEach((c) => { const n = groupName(rms, c.r) || 'No group'; const last = spans[spans.length - 1]; if (last && last.n === n) last.k++; else spans.push({ n, k: 1 }); });
+    return `<tr class="grp"><th></th>${spans.map((x) => `<th colspan="${x.k}">${esc(x.n)}</th>`).join('')}</tr>`; })() : '';
   const tally = {}; grid.forEach((g) => g.cs.forEach((x) => { if (x.st) tally[x.st.s] = (tally[x.st.s] || 0) + 1; }));
   const qs = (patch) => { const o = { m: scopeId, r: rid, y: year, v: mode, mo: month, show, ...patch }; return '#/rms/monitor?' + Object.entries(o).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); };
   const years = [now.getFullYear(), now.getFullYear() - 1];
@@ -274,14 +301,14 @@ function monitorHtml(refs, rms, q) {
     <section class="panel">
       <div class="mon-filters">
         <label>Municipality<select class="input" data-f="m"><option value="all">All my municipalities</option>${scopes.map((s) => `<option value="${s.id}" ${s.id === scopeId ? 'selected' : ''}>${esc(label(s))}</option>`).join('')}</select></label>
-        ${mode === 'month' ? `<label>Report<select class="input" data-f="r">${reports.map((x) => `<option value="${x.id}" ${x.id === rid ? 'selected' : ''}>${esc(x.code + ' · ' + x.name)}</option>`).join('')}</select></label>`
+        ${mode === 'month' ? `<label>Report<select class="input" data-f="r">${groupedOptions(rms, reports, rid)}</select></label>`
           : `<label>Month<select class="input" data-f="mo">${MONTHS_LONG.map((m, i) => `<option value="${i + 1}" ${i + 1 === month ? 'selected' : ''}>${m}</option>`).join('')}</select></label>`}
         <label>Year<select class="input" data-f="y">${years.map((y) => `<option ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select></label>
-        <label>Show<select class="input" data-f="show"><option value="all">All offices</option><option value="overdue" ${show === 'overdue' ? 'selected' : ''}>With overdue only</option><option value="incomplete" ${show === 'incomplete' ? 'selected' : ''}>Incomplete only</option></select></label>
+        <label>Show<select class="input" data-f="show"><option value="all">All offices</option><option value="overdue" ${show === 'overdue' ? 'selected' : ''}>With overdue only</option><option value="verify" ${show === 'verify' ? 'selected' : ''}>For verification only</option><option value="incomplete" ${show === 'incomplete' ? 'selected' : ''}>Missing documents only</option></select></label>
         <div class="seg"><a href="${qs({ v: 'month' })}" class="${mode === 'month' ? 'on' : ''}">By Period</a><a href="${qs({ v: 'report' })}" class="${mode === 'report' ? 'on' : ''}">By Report</a></div>
       </div>
-      <div class="mon-sum">${pill('✓ Complete ' + (tally.complete || 0), 'ok')}${pill('L Late ' + (tally.late || 0), 'late')}${pill('½ Incomplete ' + (tally.incomplete || 0), 'warn')}${pill('! Overdue ' + (tally.overdue || 0), 'bad')}${pill('· Not yet due ' + ((tally.notdue || 0) + (tally.nodue || 0)))}${tally.untracked ? pill('— Before monitoring ' + tally.untracked) : ''}</div>
-      ${shown.length ? `<div class="mon-wrap"><table class="mon"><thead><tr><th>Office · Code</th>${columns.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead><tbody>
+      <div class="mon-sum">${pill('✓ Complete ' + (tally.complete || 0), 'ok')}${pill('L Late ' + (tally.late || 0), 'late')}${pill('V For verification ' + (tally.verify || 0), 'blue')}${pill('½ Missing documents ' + (tally.incomplete || 0), 'warn')}${pill('! Overdue ' + (tally.overdue || 0), 'bad')}${pill('· Not yet due ' + ((tally.notdue || 0) + (tally.nodue || 0)))}${tally.untracked ? pill('— Before monitoring ' + tally.untracked) : ''}</div>
+      ${shown.length ? `<div class="mon-wrap"><table class="mon"><thead>${groupRow}<tr><th>Office · Code</th>${columns.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead><tbody>
         ${shown.map((g) => `<tr><th><b>${esc(g.o.label)}</b><small class="mono">${esc(g.o.code || 'no office code')}</small></th>${g.cs.map((x) => x.st
           ? `<td class="c ${x.st.s}" data-cell="${esc(g.o.id)}|${esc(x.c.r.id)}|${esc(x.c.p)}" title="${esc(STATUS_TEXT[x.st.s])}">${MARK[x.st.s]}</td>` : '<td class="c na"></td>').join('')}</tr>`).join('')}
         </tbody></table></div>`
@@ -303,10 +330,11 @@ function wireMonitor(refs, rms, q) {
     const box = $('#cell-detail'); box.hidden = false;
     const row = (k, v) => `<div class="t-row" style="grid-template-columns:150px 1fr"><small>${k}</small><span>${v}</span></div>`;
     const it = st.item;
-    box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], { complete: 'ok', late: 'late', incomplete: 'warn', overdue: 'bad' }[st.s] || '')}</span></div>
+    box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], STATUS_PILL[st.s] || '')}</span></div>
       ${row('Due', st.due ? esc(fmtDate(st.due)) : 'No set due date')}
       ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDT(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · received from ' + esc(it.submittedBy) : ''}`)
         + row('Checklist', (it.checklist || []).map((c) => `${c.ok ? '✓' : '✗'} ${esc(c.item)}${c.late ? ' <small>(late, ' + esc(fmtDate(c.at)) + ')</small>' : ''}`).join(' &nbsp; ') || '—')
+        + row('History', historyHtml(it))
         : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}
       ${row('Checklist required', (r.checklist || []).map(esc).join(' · '))}`;
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -317,8 +345,13 @@ function wireMonitor(refs, rms, q) {
 function libraryHtml(refs, rms, q) {
   const edit = canEditLibrary(refs);
   const used = (id) => rms.offices.filter((o) => (o.reportIds || []).includes(id)).length;
-  const list = [...rms.reports].sort((a, b) => a.code.localeCompare(b.code));
+  const list = byGroup(rms, rms.reports);
   const cols = 'grid-template-columns:84px minmax(200px,1.6fr) minmax(170px,1fr) 90px 110px 56px';
+  const inGroup = (gid) => rms.reports.filter((r) => r.groupId === gid).length;
+  // Group headings between the rows when groups are in use.
+  const useGroups = list.some((r) => groupName(rms, r));
+  let curG = null;
+  const head = (r) => { if (!useGroups) return ''; const g = groupName(rms, r) || 'No group'; if (g === curG) return ''; curG = g; return `<div class="rep-grp">${esc(g)}</div>`; };
   return `<div class="page">
     <div class="page-head"><div><h1>Report Library</h1><p>Office-wide list of reports the auditees submit. Kept by the Admin and SA Staff; used by all teams. It starts empty and grows as reports are added.</p></div>
       ${edit ? '<button class="btn primary" id="add-report">+ Add Report</button>' : ''}</div>
@@ -327,11 +360,14 @@ function libraryHtml(refs, rms, q) {
           <select class="input" id="st-y">${[0, 1, 2].map((k) => new Date().getFullYear() - k).map((y) => `<option ${rms.startPeriod.slice(0, 4) === String(y) ? 'selected' : ''}>${y}</option>`).join('')}</select>
           <button class="btn" id="st-save">Save</button></span>` : `<span class="r"><b>${esc(periodLabel(rms.startPeriod))}</b></span>`}</div>
       <div class="note">The Submission Monitor tracks submissions from this month onward. Earlier periods show “—” instead of overdue.</div></section>
+    <section class="panel" style="margin-top:20px"><div class="panel-head"><h2>Report Groups · ${rms.groups.length}</h2>${edit ? '<span class="r"><button class="btn" id="edit-groups">Edit Groups</button></span>' : ''}</div>
+      ${rms.groups.length ? `<div class="note chips">${rms.groups.map((g) => pill(g.name + ' · ' + inGroup(g.id), 'blue')).join('')}</div>`
+        : `<div class="note">No groups yet. The team decides its own groups (for example by what the reports contain), then assigns each report to one. Groups organize Receiving, the Submission Monitor and later the encoding.</div>`}</section>
     <section class="panel" style="margin-top:20px">
       <div class="panel-head"><h2>Reports · ${list.filter((r) => r.active !== false).length}</h2>${list.length ? '<span class="r"><label class="sr-only" for="find-rep">Search reports</label><input class="input" id="find-rep" placeholder="Search reports" style="width:200px"></span>' : ''}</div>
       ${list.length ? `<div class="t-head" style="${cols}"><span>Code</span><span>Report</span><span>Schedule</span><span>Checklist</span><span>Used by</span><span></span></div>
-        <div id="rep-list">${list.map((r) => { const n = used(r.id); return `<div class="t-row ${r.active === false ? 'removed' : ''}" style="${cols}" data-find="${esc((r.code + ' ' + r.name).toLowerCase())}">
-          <span class="mono"><b>${esc(r.code)}</b></span><span><b>${esc(r.name)}</b>${r.basis ? `<br><small>${esc(r.basis)}</small>` : ''}${r.active === false ? ' ' + pill('Inactive') : ''}</span>
+        <div id="rep-list">${list.map((r) => { const n = used(r.id); return `${head(r)}<div class="t-row ${r.active === false ? 'removed' : ''}" style="${cols}" data-find="${esc((r.code + ' ' + r.name).toLowerCase())}">
+          <span class="mono"><b>${esc(r.code)}</b></span><span><b>${esc(r.name)}</b>${r.bulk ? ' ' + pill('Bulk', 'blue') : ''}${r.basis ? `<br><small>${esc(r.basis)}</small>` : ''}${r.active === false ? ' ' + pill('Inactive') : ''}</span>
           <span>${esc(r.frequency)}<br><small>${esc(dueText(r))}</small></span>
           <span>${(r.checklist || []).length} item${(r.checklist || []).length === 1 ? '' : 's'}</span>
           <span><small>${n ? n + ' office' + (n > 1 ? 's' : '') : 'Not used yet'}</small></span>
@@ -342,17 +378,55 @@ function libraryHtml(refs, rms, q) {
 
 function wireLibrary(refs, rms) {
   const add = $('#add-report'); if (add) add.onclick = () => editReport(refs, rms, null);
+  const eg = $('#edit-groups'); if (eg) eg.onclick = () => editGroups(refs, rms);
   const st = $('#st-save'); if (st) st.onclick = async () => {
     await store.save('rms_settings', 'office', { startPeriod: $('#st-y').value + '-' + $('#st-m').value }, by(refs));
     toast('Monitoring start saved.', 'ok'); };
   $$('[data-edit-rep]').forEach((b) => { b.onclick = () => editReport(refs, rms, b.dataset.editRep); });
   $$('[data-view-rep]').forEach((b) => { b.onclick = () => viewReport(rms, b.dataset.viewRep); });
-  const f = $('#find-rep'); if (f) f.oninput = () => { const v = f.value.trim().toLowerCase(); $$('#rep-list .t-row').forEach((r) => { r.hidden = v && !r.dataset.find.includes(v); }); };
+  const f = $('#find-rep'); if (f) f.oninput = () => { const v = f.value.trim().toLowerCase(); $$('#rep-list .t-row').forEach((r) => { r.hidden = v && !r.dataset.find.includes(v); }); $$('#rep-list .rep-grp').forEach((h) => { h.hidden = !!v; }); };
+}
+
+// The team's report groups: add, rename, reorder, remove. Reports in a removed group show under "No group".
+async function editGroups(refs, rms) {
+  const list = rms.groups.map((g) => ({ ...g }));
+  let out = null;
+  const res = await modal({
+    title: 'Report Groups',
+    body: `<p class="hint">Name the groups the way the team works, for example by what the reports contain. Each report is then assigned to one group in its Edit window.</p>
+      <div class="list-edit" id="g-items"></div>`,
+    onOpen: (bg) => {
+      const keep = () => { $$('[data-g]', bg).forEach((x) => { list[+x.dataset.g].name = x.value; }); };
+      const draw = () => {
+        $('#g-items', bg).innerHTML = list.map((g, i) => { const n = rms.reports.filter((r) => r.groupId === g.id).length; return `<div><span class="n">${i + 1}.</span><input class="input txt" data-g="${i}" value="${esc(g.name)}" aria-label="Group name">
+            <small class="hint">${n} report${n === 1 ? '' : 's'}</small>
+            <button type="button" class="mini" data-up="${i}" ${i ? '' : 'disabled'} aria-label="Move up">↑</button>
+            <button type="button" class="mini" data-rm="${i}" aria-label="Remove">×</button></div>`; }).join('')
+          + `<div><input class="input" id="g-new" placeholder="+ New group name, then press Enter"></div>`;
+        $$('[data-rm]', bg).forEach((b) => { b.onclick = () => { keep(); list.splice(+b.dataset.rm, 1); draw(); }; });
+        $$('[data-up]', bg).forEach((b) => { b.onclick = () => { keep(); const i = +b.dataset.up; [list[i - 1], list[i]] = [list[i], list[i - 1]]; draw(); }; });
+        const nw = $('#g-new', bg);
+        nw.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); keep(); const v = nw.value.trim(); if (v) { list.push({ id: newId('grp'), name: v }); draw(); $('#g-new', bg).focus(); } } };
+      };
+      draw();
+    },
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Save Groups', cls: 'primary', value: 'save', check: (bg) => {
+      $$('[data-g]', bg).forEach((x) => { list[+x.dataset.g].name = x.value.trim(); });
+      const nw = $('#g-new', bg).value.trim(); if (nw) list.push({ id: newId('grp'), name: nw });
+      if (list.some((g) => !g.name)) { toast('Every group needs a name.', 'bad'); return false; }
+      const names = list.map((g) => g.name.toLowerCase());
+      if (new Set(names).size !== names.length) { toast('Two groups have the same name.', 'bad'); return false; }
+      out = list; return true;
+    } }]
+  });
+  if (res !== 'save') return;
+  await store.save('rms_settings', 'groups', { list: out }, by(refs));
+  toast('Report groups saved.', 'ok');
 }
 
 function viewReport(rms, id) {
   const r = rms.reports.find((x) => x.id === id);
-  modal({ title: `${r.code} · ${r.name}`, body: `<p><b>Schedule:</b> ${esc(r.frequency)} · ${esc(dueText(r))}</p>${r.basis ? `<p><b>Legal basis:</b> ${esc(r.basis)}</p>` : ''}
+  modal({ title: `${r.code} · ${r.name}`, body: `<p><b>Schedule:</b> ${esc(r.frequency)} · ${esc(dueText(r))}</p><p><b>Group:</b> ${esc(groupName(rms, r) || 'No group')}${r.bulk ? ' · Bulk (always For Verification)' : ''}</p>${r.basis ? `<p><b>Legal basis:</b> ${esc(r.basis)}</p>` : ''}
     <div><span class="legend">Checklist</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}</li>`).join('')}</ol></div>` });
 }
 
@@ -365,7 +439,9 @@ async function editReport(refs, rms, id) {
     title: id ? 'Edit Report' : 'Add Report',
     body: `<div class="rms-codename"><div class="field"><label for="r-code">Report Code</label><input class="input mono upper" id="r-code" value="${esc(r.code)}" maxlength="10" placeholder="RCI"><span class="hint">Short code used in the tracking number.</span></div>
         <div class="field"><label for="r-name">Report Name</label><input class="input" id="r-name" value="${esc(r.name)}" placeholder="Report of Checks Issued"></div></div>
-      <div class="field"><label for="r-basis">Legal Basis (optional)</label><input class="input" id="r-basis" value="${esc(r.basis || '')}" placeholder="e.g. COA Circular No. ___"></div>
+      <div class="two"><div class="field"><label for="r-basis">Legal Basis (optional)</label><input class="input" id="r-basis" value="${esc(r.basis || '')}" placeholder="e.g. COA Circular No. ___"></div>
+        <div class="field"><label for="r-group">Group</label><select class="input" id="r-group"><option value="">No group</option>${rms.groups.map((g) => `<option value="${g.id}" ${r.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>
+          <span class="hint">${rms.groups.length ? 'Groups are set in Report Groups.' : 'No groups yet. Add them with Edit Groups.'}</span></div></div>
       <div class="two"><div class="field"><label for="r-freq">Frequency</label><select class="input" id="r-freq">${FREQ.map((f) => `<option ${r.frequency === f ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
         <div class="field"><label for="r-due">Due</label><select class="input" id="r-due">
           <option value="after" ${r.due.kind === 'after' ? 'selected' : ''}>Within a number of days after the period ends</option>
@@ -376,6 +452,7 @@ async function editReport(refs, rms, id) {
       <div><span class="legend">Checklist (documents that make up this report)</span>
         <div class="list-edit" id="r-items"></div>
         <span class="hint">During receiving, the receiver ticks which of these were actually submitted.</span></div>
+      <div class="field"><label><input type="checkbox" id="r-bulk" ${r.bulk ? 'checked' : ''}> Bulk report (e.g. with DVs): always received For Verification, even when an auditor receives it</label></div>
       ${id ? `<div class="field"><label for="r-active">Status</label><select class="input" id="r-active"><option value="yes" ${r.active !== false ? 'selected' : ''}>Active</option><option value="no" ${r.active === false ? 'selected' : ''}>Inactive (no longer required)</option></select>
         ${usedBy ? `<span class="hint">Ticked for ${usedBy} office${usedBy > 1 ? 's' : ''}. A changed code applies to tracking numbers made from now on.</span>` : ''}</div>` : ''}`,
     onOpen: (bg) => {
@@ -402,7 +479,8 @@ async function editReport(refs, rms, id) {
       const kind = $('#r-due', bg).value, n = parseInt($('#r-due-n', bg).value, 10);
       if (kind !== 'none' && !(n >= 1 && n <= 31)) { toast('Enter the number of days (1 to 31).', 'bad'); return false; }
       out = { code, name, basis: $('#r-basis', bg).value.trim(), frequency: $('#r-freq', bg).value,
-        due: kind === 'none' ? { kind } : kind === 'after' ? { kind, days: n } : { kind, day: n }, checklist: items, active: id ? $('#r-active', bg).value === 'yes' : true };
+        due: kind === 'none' ? { kind } : kind === 'after' ? { kind, days: n } : { kind, day: n }, checklist: items, active: id ? $('#r-active', bg).value === 'yes' : true,
+        groupId: $('#r-group', bg).value, bulk: $('#r-bulk', bg).checked };
       return true;
     } }]
   });

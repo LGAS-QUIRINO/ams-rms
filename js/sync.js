@@ -8,6 +8,9 @@ import { auth } from './auth.js';
 
 export const syncState = { status: 'idle', pending: 0, message: '', lastSync: null };
 let running = null, timer = null, fails = 0;
+// The first sync each time the app is opened reads the whole database, so rows deleted directly in the Sheet
+// are also removed from this computer.
+let fullDone = false;
 
 function publish(patch) {
   Object.assign(syncState, patch);
@@ -45,8 +48,17 @@ async function doSync() {
   }
 
   const last = await db.get('meta', 'lastSync');
-  const res = await call('pull', { since: last || '' });
+  const full = !fullDone || !last;
+  const res = await call('pull', { since: full ? '' : last });
   const queued = new Set((await db.all('outbox')).map((o) => o.table + '|' + o.id));
+  if (full) {
+    for (const [table, recs] of Object.entries(res.records)) {
+      const onServer = new Set(recs.map((r) => r.id));
+      for (const local of await db.all('records', table)) {
+        if (!onServer.has(local.id) && !local.pending && !queued.has(table + '|' + local.id)) { await db.del('records', [table, local.id]); changed = true; }
+      }
+    }
+  }
   for (const [table, recs] of Object.entries(res.records)) {
     for (const rec of recs) {
       if (queued.has(table + '|' + rec.id)) continue;           // this device's unsent change wins until it is sent
@@ -57,6 +69,7 @@ async function doSync() {
     }
   }
   await db.put('meta', new Date(new Date(res.serverTime).getTime() - 5000).toISOString(), 'lastSync');
+  fullDone = true;
   if (changed) emitChange('sync');
   await refreshPending();
   fails = 0;

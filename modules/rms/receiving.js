@@ -51,9 +51,52 @@ export function statusPill(i) {
 /* ---------- checklist of a report for one office ---------- */
 // Most reports use the Report Library checklist. A report marked "each office has its own list" (e.g. BRS: one line per bank
 // account) uses the office's own list from Office Setup. The office's extra requirement, if any, is added at the end.
-export function itemsFor(r, o) {
-  const base = r.perOffice ? ((o && o.lists && o.lists[r.id]) || []) : (r.checklist || []);
-  return [...base, ...(o && o.note ? [o.note] : [])];
+// With parts (e.g. BRS: BRS signed, bank statement, list of outstanding checks), every line (bank account) gets its own checklist:
+// one entry per line and part, { item: 'GF – LBP 1234 · Bank statement', line, part }.
+export function entriesFor(r, o) {
+  const parts = r.perOffice ? (r.checklist || []) : [];
+  const base = r.perOffice
+    ? ((o && o.lists && o.lists[r.id]) || []).flatMap((line) => parts.length ? parts.map((part) => ({ item: `${line} · ${part}`, line, part })) : [{ item: line }])
+    : (r.checklist || []).map((t) => ({ item: t }));
+  return [...base, ...(o && o.note ? [{ item: o.note }] : [])];
+}
+export const itemsFor = (r, o) => entriesFor(r, o).map((e) => e.item);
+// Entries with a line and a part, grouped by line (in order): [[line, [{...entry, k}]]].
+export const isGrouped = (ck) => (ck || []).some((c) => c.line && c.part);
+export function linesOf(ck) {
+  const m = new Map();
+  (ck || []).forEach((c, k) => { if (c.line && c.part) { if (!m.has(c.line)) m.set(c.line, []); m.get(c.line).push({ ...c, k }); } });
+  return [...m.entries()];
+}
+// Accounts complete / partly submitted / not submitted.
+export function lineTally(ck) {
+  const rows = linesOf(ck);
+  return { rows, total: rows.length, done: rows.filter(([, es]) => es.every((e) => e.ok)), part: rows.filter(([, es]) => es.some((e) => e.ok) && !es.every((e) => e.ok)), none: rows.filter(([, es]) => !es.some((e) => e.ok)) };
+}
+// Accordions: one per line, each opening to its parts as checkboxes (name), with a count and Tick all.
+function accordionHtml(ck, { name, onlyMissing = false, hideAll = false, checked = (e) => e.ok, open = false }) {
+  return linesOf(ck).map(([line, es]) => {
+    const shown = onlyMissing ? es.filter((e) => !e.ok) : es;
+    if (!shown.length) return '';
+    return `<details class="acc" data-line="${esc(line)}" data-t="${esc(line.toLowerCase())}" ${hideAll ? 'hidden' : ''} ${open ? 'open' : ''}>
+      <summary><span class="acc-l">${esc(line)}</span><span class="acc-n"></span></summary>
+      <div class="acc-b">${shown.map((e) => `<label><input type="checkbox" name="${name}" value="${e.k}" ${checked(e) ? 'checked' : ''}> ${esc(e.part)}${e.ok && e.late ? ` <small>· late, ${esc(fmtDate(e.at))}</small>` : ''}</label>`).join('')}
+        <div class="btn-row"><button type="button" class="btn sm" data-acc-all>Tick all</button></div></div></details>`;
+  }).join('');
+}
+// Keeps each accordion's count up to date; base = parts already submitted before (Late Docs).
+function wireAccordions(bg, name, onChange, base = () => 0) {
+  const upd = () => $$('details.acc', bg).forEach((d) => {
+    const xs = $$(`input[name=${name}]`, d), t = xs.filter((x) => x.checked).length, n = $('.acc-n', d);
+    const have = base(d) + t, of = base(d) + xs.length;
+    n.textContent = `${have} of ${of}`; n.className = 'acc-n ' + (have === of ? 'ok' : have ? 'half' : 'none');
+  });
+  $$('details.acc', bg).forEach((d) => {
+    $$(`input[name=${name}]`, d).forEach((x) => { x.addEventListener('change', () => { upd(); if (onChange) onChange(); }); });
+    $('[data-acc-all]', d).onclick = () => { $$(`input[name=${name}]`, d).forEach((x) => { x.checked = true; }); upd(); if (onChange) onChange(); };
+  });
+  upd();
+  return upd;
 }
 const LONG = 12;
 // Date and time for an <input type="datetime-local">, in this computer's time.
@@ -71,6 +114,17 @@ export const encodedLater = (i) => !!laterNote(i.receivedAt, i.encodedAt);
 // Checklist for screens: every line when short; for long lists (e.g. 75 bank accounts) the count and only what is missing.
 export function checklistHtml(i) {
   const ck = i.checklist || [], m = ck.filter((c) => !c.ok);
+  if (isGrouped(ck)) {
+    // Per account: how many are complete, which lack parts (and which), which were not submitted.
+    const t = lineTally(ck), lbl = ((i.lineLabel || 'account') + 's').toLowerCase(), other = ck.filter((c) => !(c.line && c.part));
+    const lacks = (es) => es.filter((e) => !e.ok).map((e) => e.part).join(', ');
+    return `<p><b>${t.done.length} of ${t.total} ${esc(lbl)} complete</b></p>
+      ${t.part.length ? `<span class="legend">Missing parts · ${t.part.length}</span><ul class="rcv-ck">${t.part.map(([l, es]) => `<li class="miss">${esc(l)} <small>— no ${esc(lacks(es))}</small></li>`).join('')}</ul>` : ''}
+      ${t.none.length ? `<span class="legend">Not submitted · ${t.none.length}</span><ul class="rcv-ck">${t.none.map(([l]) => `<li class="miss">${esc(l)}</li>`).join('')}</ul>` : ''}
+      ${other.length ? `<ul class="rcv-ck">${other.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}</li>`).join('')}</ul>` : ''}
+      ${!t.part.length && !t.none.length && !other.some((c) => !c.ok) ? '<p class="ok-t">Nothing missing.</p>' : ''}
+      <details><summary>Show every ${esc((i.lineLabel || 'account').toLowerCase())}</summary><ul class="rcv-ck">${t.rows.map(([l, es]) => `<li class="${es.every((e) => e.ok) ? 'ok' : 'miss'}">${esc(l)}<br><small>${es.map((e) => (e.ok ? '✓ ' : '✗ ') + esc(e.part) + (e.late ? ' (' + esc(fmtDate(e.at)) + ')' : '')).join(' · ')}</small></li>`).join('')}</ul></details>`;
+  }
   const line = (c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`;
   if (ck.length <= LONG) return `<ul class="rcv-ck">${ck.map(line).join('')}</ul>`;
   const late = ck.filter((c) => c.ok && c.late);
@@ -88,15 +142,21 @@ export function historyOf(i) {
   const ev = [];
   if (i.kind === 'comm') { const n = laterNote(i.receivedAt, i.encodedAt, i.receivedByName); return [{ at: i.receivedAt, text: 'Received' + (n ? ' (' + n + ')' : ''), who: n ? '' : i.receivedByName }]; }
   let have = ck.filter((c) => c.ok && !c.late).length;
+  // Per account (e.g. BRS): after each submission, how many accounts are complete.
+  const grp = isGrouped(ck), lbl = ((i.lineLabel || 'account') + 's').toLowerCase(), inSoFar = new Set(ck.map((c, k) => (c.ok && !c.late ? k : -1)).filter((k) => k >= 0));
+  const acct = () => { const rows = linesOf(ck); const d = rows.filter(([, es]) => es.every((e) => inSoFar.has(e.k))).length; return `${d} of ${rows.length} ${lbl} complete`; };
   const n1 = laterNote(i.receivedAt, i.encodedAt, i.receivedByName);
-  ev.push({ at: i.receivedAt, who: n1 ? '' : i.receivedByName, text: `1st submission · ${have} of ${total} document${total === 1 ? '' : 's'} submitted${have === total ? ' · all submitted' : ''}${n1 ? ' (' + n1 + ')' : ''}` });
+  ev.push({ at: i.receivedAt, who: n1 ? '' : i.receivedByName, text: grp ? `1st submission · ${acct()} (${have} of ${total} parts)${n1 ? ' (' + n1 + ')' : ''}`
+    : `1st submission · ${have} of ${total} document${total === 1 ? '' : 's'} submitted${have === total ? ' · all submitted' : ''}${n1 ? ' (' + n1 + ')' : ''}` });
   const late = {};
-  ck.filter((c) => c.ok && c.late).forEach((c) => { (late[c.at] = late[c.at] || []).push(c); });
+  ck.forEach((c, k) => { if (c.ok && c.late) (late[c.at] = late[c.at] || []).push({ ...c, k }); });
   Object.keys(late).sort().forEach((at, k) => {
     const got = late[at]; have += got.length;
     const names = got.length > 5 ? got.slice(0, 5).map((c) => c.item).join('; ') + `; and ${got.length - 5} more` : got.map((c) => c.item).join('; ');
     const nl = laterNote(at, got[0].encodedAt, got[0].byName);
-    ev.push({ at, who: nl ? '' : got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}${nl ? ' (' + nl + ')' : ''}` });
+    got.forEach((c) => inSoFar.add(c.k));
+    ev.push({ at, who: nl ? '' : got[0].byName || '', text: grp ? `${ordinal(k + 2)} submission · +${got.length} late part${got.length > 1 ? 's' : ''} (${names}) · ${acct()}${nl ? ' (' + nl + ')' : ''}`
+      : `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}${nl ? ' (' + nl + ')' : ''}` });
   });
   (i.corrections || []).forEach((c) => ev.push({ at: c.at, who: c.byName, decision: true, text: `Corrected · ${c.reason}${c.changes && c.changes.length ? ' (' + c.changes.join('; ') + ')' : ''}` }));
   if (i.decision) ev.push({ at: i.decision.at, who: i.decision.byName, decision: true,
@@ -139,7 +199,7 @@ export function receivingHtml(refs, rms, q) {
     ${verify.length ? `<section class="panel"><div class="panel-head"><h2>For Verification · ${verify.length}</h2></div>
       <div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Report</span><span>Received</span><span>Documents</span><span></span></div>
       ${verify.map((i) => { const m = missing(i), n = (i.checklist || []).length; return `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span><span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
-        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${n - m.length} of ${n} submitted${m.length ? '<br>Missing: ' + (m.length > 3 ? m.slice(0, 3).map((c) => esc(c.item)).join('; ') + `; and ${m.length - 3} more` : m.map((c) => esc(c.item)).join('; ')) : ''}</small></span>
+        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${isGrouped(i.checklist) ? (() => { const t = lineTally(i.checklist); return `${t.done.length} of ${t.total} ${esc(((i.lineLabel || 'account') + 's').toLowerCase())} complete${t.part.length ? `<br>${t.part.length} missing parts` : ''}${t.none.length ? `<br>${t.none.length} not submitted` : ''}`; })() : `${n - m.length} of ${n} submitted`}${isGrouped(i.checklist) ? '' : m.length ? '<br>Missing: ' + (m.length > 3 ? m.slice(0, 3).map((c) => esc(c.item)).join('; ') + `; and ${m.length - 3} more` : m.map((c) => esc(c.item)).join('; ')) : ''}</small></span>
         <span class="acts"><button class="btn sm primary" data-decide="${i.id}">Accept / Reject</button><button class="btn sm" data-view="${i.id}">View</button></span></div>`; }).join('')}</section>` : ''}
     ${lacking.length ? `<section class="panel"><div class="panel-head"><h2>Accepted, Still Missing Documents · ${lacking.length}</h2></div>
       ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
@@ -236,7 +296,8 @@ async function receiveForm(refs, rms) {
         const def = tracked.find((p) => !got.has(p)) || ps[ps.length - 1];
         $('#f-per', bg).innerHTML = ps.reverse().map((p) => `<option value="${p}" ${p === def ? 'selected' : ''}>${esc(periodLabel(p))}${got.has(p) ? ' · already received' : ''}</option>`).join('')
           + (r.frequency === 'As needed' ? `<option value="${year}">${year} (as needed)</option>` : '');
-        const items = itemsFor(r, o);
+        const ents = entriesFor(r, o), items = ents.map((e) => e.item);
+        if (isGrouped(ents)) return groupedList(r, o, ents);
         const many = items.length > LONG;
         $('#f-list', bg).innerHTML = (r.perOffice && !(o.lists && (o.lists[r.id] || []).length)
           ? `<p class="warn-t">No ${esc((r.lineLabel || 'line').toLowerCase())}s are listed for this office yet. Add them in Office Setup (${esc(r.code)}).</p>` : '')
@@ -250,10 +311,45 @@ async function receiveForm(refs, rms) {
         $$('input[name=ck]', bg).forEach((x) => { x.onchange = state; });
         dueHint(); state(); decState();
       };
+      // Reports with parts per line (e.g. BRS per bank account): 1) select the accounts that came in, 2) each opens to its parts.
+      const groupedList = (r, o, ents) => {
+        const lines = linesOf(ents).map(([l]) => l), lbl = (r.lineLabel || 'Line').toLowerCase(), many = lines.length > 8;
+        const other = ents.map((e, k) => ({ ...e, k })).filter((e) => !(e.line && e.part));
+        $('#f-list', bg).innerHTML = `<small>Each ${esc(lbl)} includes: ${esc(r.checklist.join(', '))}</small>
+          <span class="legend">1. Select the ${esc(lbl)}s that came in</span>
+          ${many ? `<input class="input" id="f-find" placeholder="Search ${lines.length} ${esc(lbl)}s">` : ''}
+          <div class="rcv-items acct-pick${many ? ' long' : ''}">${lines.map((l, li) => `<label data-t="${esc(l.toLowerCase())}"><input type="checkbox" name="acct" value="${li}"> ${esc(l)}</label>`).join('')}</div>
+          <div class="btn-row"><button type="button" class="btn sm" id="f-sel-all">Select all</button><button type="button" class="btn sm" id="f-sel-none">Clear</button></div>
+          <span class="legend">2. Tick the parts submitted for each ${esc(lbl)}</span>
+          <div id="f-acc">${accordionHtml(ents.map((e) => ({ ...e, ok: false })), { name: 'ck', hideAll: true })}<p class="hint" id="f-acc-none">Select a ${esc(lbl)} above.</p></div>
+          ${other.length ? `<span class="legend">Also required</span><div class="rcv-items">${other.map((e) => `<label><input type="checkbox" name="ck" value="${e.k}"> ${esc(e.item)}</label>`).join('')}</div>` : ''}`;
+        const accs = $$('details.acc', bg);
+        const pick = () => {
+          const on = new Set($$('input[name=acct]:checked', bg).map((x) => lines[+x.value]));
+          accs.forEach((d) => { const show = on.has(d.dataset.line); if (!show) { $$('input[name=ck]', d).forEach((x) => { x.checked = false; }); d.open = false; } d.hidden = !show; });
+          $('#f-acc-none', bg).hidden = on.size > 0; updAcc(); state();
+        };
+        const updAcc = wireAccordions(bg, 'ck', () => state());
+        $$('input[name=acct]', bg).forEach((x) => { x.onchange = () => { pick(); const d = accs.find((a) => a.dataset.line === lines[+x.value]); if (x.checked && d) d.open = true; }; });
+        $('#f-sel-all', bg).onclick = () => { $$('input[name=acct]', bg).forEach((x) => { if (!x.closest('label').hidden) x.checked = true; }); pick(); };
+        $('#f-sel-none', bg).onclick = () => { $$('input[name=acct]', bg).forEach((x) => { x.checked = false; }); pick(); };
+        if ($('#f-find', bg)) $('#f-find', bg).oninput = () => { const v = $('#f-find', bg).value.trim().toLowerCase(); $$('.acct-pick label', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+        $$('.rcv-items:not(.acct-pick) input[name=ck]', bg).forEach((x) => { x.onchange = state; });
+        dueHint(); state(); decState();
+      };
       const dueHint = () => { const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value); const p = $('#f-per', bg).value; const d = r && p ? dueDate(r, p) : null;
         const when = new Date($('#f-date', bg).value || now);
         $('#f-due', bg).textContent = d ? `Due ${fmtDate(d)}${when > d ? ' · received late' : ' · on time'}` : ''; };
       const state = () => {
+        if ($('#f-acc', bg)) {
+          const accs = $$('details.acc', bg), sel = accs.filter((d) => !d.hidden);
+          const full = sel.filter((d) => $$('input[name=ck]', d).every((x) => x.checked)).length;
+          const empty = sel.filter((d) => !$$('input[name=ck]', d).some((x) => x.checked)).length;
+          $('#f-state', bg).innerHTML = `<b class="${full === accs.length ? 'ok-t' : 'warn-t'}">${full} of ${accs.length} complete</b> · ${sel.length} selected`
+            + (sel.length - full - empty ? ` · ${sel.length - full - empty} missing parts` : '') + (empty ? ` · <span class="warn-t">${empty} selected with no parts ticked</span>` : '')
+            + ` · ${accs.length - sel.length} not submitted`;
+          return;
+        }
         const all = $$('input[name=ck]', bg), ticked = all.filter((x) => x.checked).length;
         $('#f-state', bg).innerHTML = !all.length ? '' : ticked === all.length ? `<b class="ok-t">All ${all.length} submitted</b>`
           : `<b class="warn-t">${ticked} of ${all.length} submitted</b> · ${all.length - ticked} missing`;
@@ -337,18 +433,20 @@ async function receiveForm(refs, rms) {
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
         if (!r) { toast('This office has no report ticked. Tick its reports in Office Setup first.', 'bad'); return false; }
         const period = $('#f-per', bg).value;
-        const items = itemsFor(r, o);
-        if (!items.length) { toast(`No ${(r.lineLabel || 'line').toLowerCase()}s are listed for this office yet. Add them in Office Setup.`, 'bad'); return false; }
+        const ents = entriesFor(r, o);
+        if (!ents.length) { toast(`No ${(r.lineLabel || 'line').toLowerCase()}s are listed for this office yet. Add them in Office Setup.`, 'bad'); return false; }
         const ticked = new Set($$('input[name=ck]:checked', bg).map((x) => +x.value));
         if (!ticked.size) { toast('Tick at least one document received.', 'bad'); return false; }
+        const bare = $$('details.acc', bg).find((d) => !d.hidden && !$$('input[name=ck]', d).some((x) => x.checked));
+        if (bare) { toast(`Tick the parts submitted for ${bare.dataset.line}, or unselect it.`, 'bad'); bare.open = true; return false; }
         const at = base.receivedAt;
-        const checklist = items.map((t, k) => ({ item: t, ok: ticked.has(k), at: ticked.has(k) ? at : '' }));
+        const checklist = ents.map((e, k) => ({ ...e, ok: ticked.has(k), at: ticked.has(k) ? at : '' }));
         const allIn = checklist.every((c) => c.ok);
         const yr = +period.slice(0, 4);
         const choice = auditor && !r.bulk ? ($('input[name=rdec]:checked', bg)?.value || 'verify') : 'verify';
         const dRem = $('#f-drem', bg) ? $('#f-drem', bg).value.trim() : '';
         if (choice === 'reject' && !dRem) { toast('Enter the reason for rejecting it.', 'bad'); return false; }
-        out = { ...base, reportId: r.id, reportCode: r.code, period, checklist, ...trackingNo(rms, o, r.code, yr), ...(allIn ? { completedAt: at } : {}),
+        out = { ...base, reportId: r.id, reportCode: r.code, period, checklist, ...(isGrouped(checklist) ? { lineLabel: r.lineLabel || 'Line' } : {}), ...trackingNo(rms, o, r.code, yr), ...(allIn ? { completedAt: at } : {}),
           status: choice === 'accept' ? 'accepted' : choice === 'reject' ? 'rejected' : 'verify',
           ...(choice === 'verify' ? {} : { decision: { action: choice, remarks: dRem, by: by(refs), byName: myName(refs), at: encodedAt } }) };
       } else {
@@ -430,6 +528,17 @@ async function addLate(refs, rms, id) {
     title: 'Add Late Documents · ' + numberOf(i),
     // Long lists (e.g. 75 bank accounts): only the missing ones, with a search box.
     body: (() => { const many = i.checklist.length > LONG, miss = i.checklist.map((c, k) => ({ c, k })).filter((x) => !x.c.ok);
+      const dateField = `<div class="field" style="max-width:300px"><label for="l-date">Date received</label><input class="input" type="datetime-local" id="l-date" value="${localInput(new Date())}" max="${localInput(new Date())}">
+        <span class="hint">Now, or the date on the RECEIVED stamp when encoding later.</span></div>`;
+      if (isGrouped(i.checklist)) {
+        // Per account: only accounts still lacking something, each opening to its missing parts.
+        const t = lineTally(i.checklist), lbl = (i.lineLabel || 'account').toLowerCase(), other = miss.filter((x) => !(x.c.line && x.c.part));
+        return `<p>Tick the missing parts that came in.</p>${dateField}
+          <p><b>${t.done.length} of ${t.total} ${esc(lbl)}s complete.</b> ${t.part.length} missing parts · ${t.none.length} not submitted</p>
+          ${t.part.length + t.none.length > 8 ? `<input class="input" id="l-find" placeholder="Search ${esc(lbl)}s">` : ''}
+          <div class="acc-list">${accordionHtml(i.checklist, { name: 'late', onlyMissing: true, checked: () => false })}</div>
+          ${other.length ? `<span class="legend">Also required</span><div class="rcv-items">${other.map(({ c, k }) => `<label><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')}</div>` : ''}`;
+      }
       return `<p>Tick the missing documents that came in.</p>
       <div class="field" style="max-width:300px"><label for="l-date">Date received</label><input class="input" type="datetime-local" id="l-date" value="${localInput(new Date())}" max="${localInput(new Date())}">
         <span class="hint">Now, or the date on the RECEIVED stamp when encoding later.</span></div>
@@ -438,7 +547,8 @@ async function addLate(refs, rms, id) {
         : i.checklist.map((c, k) => c.ok ? `<label class="done">✓ ${esc(c.item)} <small>received ${esc(fmtDate(c.at))}</small></label>` : `<label><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')}</div>
         ${many ? '<div class="btn-row"><button type="button" class="btn sm" id="l-all">Tick all shown</button></div>' : ''}</div>`; })(),
     onOpen: (bg) => {
-      if ($('#l-find', bg)) $('#l-find', bg).oninput = () => { const v = $('#l-find', bg).value.trim().toLowerCase(); $$('.rcv-items label', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+      if ($('#l-find', bg)) $('#l-find', bg).oninput = () => { const v = $('#l-find', bg).value.trim().toLowerCase(); $$('.rcv-items label[data-t], details.acc', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+      if ($('details.acc', bg)) wireAccordions(bg, 'late', null, (d) => i.checklist.filter((c) => c.line === d.dataset.line && c.ok).length);
       if ($('#l-all', bg)) $('#l-all', bg).onclick = () => { $$('.rcv-items label', bg).forEach((l) => { if (!l.hidden) $('input', l).checked = true; }); };
     },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save', cls: 'primary', value: 'save', check: (bg) => {
@@ -497,7 +607,12 @@ async function correctItem(refs, rms, id) {
       <div class="two"><div class="field"><label for="c-date">Date received</label><input class="input" type="datetime-local" id="c-date" value="${localInput(i.receivedAt)}" max="${localInput(new Date())}"></div>
         ${isRep ? `<div class="field"><label for="c-per">Period</label><select class="input" id="c-per">${periods.map((p) => `<option value="${p}" ${p === i.period ? 'selected' : ''}>${esc(periodLabel(p))}</option>`).join('')}</select></div>`
           : `<div class="field"><label for="c-subj">Subject</label><input class="input" id="c-subj" value="${esc(i.subject || '')}"></div>`}</div>
-      ${isRep ? `<div><span class="legend">Checklist · tick what was actually submitted</span>
+      ${isRep && isGrouped(ck) ? `<div><span class="legend">Checklist per ${esc((i.lineLabel || 'account').toLowerCase())} · tick what was actually submitted</span>
+        <div class="rcv-list">${linesOf(ck).length > 8 ? '<input class="input" id="c-find" placeholder="Search">' : ''}
+          <div class="acc-list">${accordionHtml(ck, { name: 'cfix' })}</div>
+          ${ck.some((c) => !(c.line && c.part)) ? `<div class="rcv-items">${ck.map((c, k) => c.line && c.part ? '' : `<label><input type="checkbox" name="cfix" value="${k}" ${c.ok ? 'checked' : ''}> ${esc(c.item)}</label>`).join('')}</div>` : ''}</div>
+        <span class="hint" id="c-state"></span></div>`
+      : isRep ? `<div><span class="legend">Checklist · tick what was actually submitted</span>
         <div class="rcv-list">${many ? '<input class="input" id="c-find" placeholder="Search">' : ''}
           <div class="rcv-items${many ? ' long' : ''}">${ck.map((c, k) => `<label data-t="${esc(c.item.toLowerCase())}"><input type="checkbox" name="cfix" value="${k}" ${c.ok ? 'checked' : ''}> ${esc(c.item)}${c.ok && c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</label>`).join('')}</div></div>
         <span class="hint" id="c-state"></span></div>` : ''}
@@ -508,7 +623,8 @@ async function correctItem(refs, rms, id) {
     onOpen: (bg) => {
       const st = () => { const all = $$('input[name=cfix]', bg); if (!all.length) return; const t = all.filter((x) => x.checked).length; $('#c-state', bg).textContent = `${t} of ${all.length} submitted`; };
       $$('input[name=cfix]', bg).forEach((x) => { x.onchange = st; }); st();
-      if ($('#c-find', bg)) $('#c-find', bg).oninput = () => { const v = $('#c-find', bg).value.trim().toLowerCase(); $$('.rcv-items label', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+      if ($('#c-find', bg)) $('#c-find', bg).oninput = () => { const v = $('#c-find', bg).value.trim().toLowerCase(); $$('.rcv-items label[data-t], details.acc', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+      if ($('details.acc', bg)) wireAccordions(bg, 'cfix', st);
     },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save Correction', cls: 'primary', value: 'save', check: (bg) => {
       const why = $('#c-why', bg).value.trim();
@@ -525,7 +641,7 @@ async function correctItem(refs, rms, id) {
         const added = [], removed = [];
         patch.checklist = ck.map((c, k) => {
           if (on.has(k) && !c.ok) { added.push(c.item); return { ...c, ok: true, at: recAt, late: false }; }
-          if (!on.has(k) && c.ok) { removed.push(c.item); return { item: c.item, ok: false, at: '' }; }
+          if (!on.has(k) && c.ok) { removed.push(c.item); const { at: _a, late: _l, by: _b, byName: _bn, encodedAt: _e, ...keep } = c; return { ...keep, ok: false, at: '' }; }
           // First-submission documents follow a corrected date received.
           return c.ok && !c.late ? { ...c, at: recAt } : c;
         });
@@ -583,7 +699,14 @@ export function printSlip(refs, rms, i) {
       ${i.kind === 'comm' ? `<span>Subject</span><span>${esc(i.subject)}${i.pages ? ' · ' + esc(i.pages) : ''}</span>` : `<span>Report</span><span>${esc((rep?.name || i.reportCode) + ' · ' + periodLabel(i.period))}</span>`}
       <span>Received</span><span>${esc(new Date(i.receivedAt).toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span>
       <span>Received from</span><span>${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</span></div>
-    ${i.kind === 'report' ? `${i.checklist.length > LONG
+    ${i.kind === 'report' ? `${isGrouped(i.checklist) ? (() => {
+      // Per account: complete count, accounts lacking parts (with the parts), accounts not submitted.
+      const t = lineTally(i.checklist), lbl = ((i.lineLabel || 'account') + 's').toLowerCase(), lacks = (es) => es.filter((e) => !e.ok).map((e) => e.part).join(', ');
+      const lateN = i.checklist.filter((c) => c.ok && c.late).length;
+      return `<div class="sec">SUBMITTED</div><ul><li class="ok">${t.done.length} of ${t.total} ${esc(lbl)} complete${lateN ? ` (${lateN} late part${lateN > 1 ? 's' : ''})` : ''}</li></ul>
+        ${t.part.length ? `<div class="sec">MISSING PARTS · ${t.part.length}</div><ul>${t.part.map(([l, es]) => `<li class="miss">${esc(l)} — no ${esc(lacks(es))}</li>`).join('')}</ul>` : ''}
+        ${t.none.length ? `<div class="sec">NOT SUBMITTED · ${t.none.length}</div><ul class="${t.none.length > 14 ? 'cols' : ''}">${t.none.map(([l]) => `<li class="miss">${esc(l)}</li>`).join('')}</ul>` : ''}
+        ${!t.part.length && !t.none.length ? '<div class="sec">MISSING</div><ul><li>None</li></ul>' : ''}`; })() : i.checklist.length > LONG
       // Long lists (e.g. 75 bank accounts): the count submitted, and the missing ones (the full list is in the app).
       ? `<div class="sec">SUBMITTED</div><ul><li class="ok">${okList.length} of ${i.checklist.length}${rep?.lineLabel ? ' ' + esc(rep.lineLabel.toLowerCase()) + 's' : ''}${okList.some((c) => c.late) ? ` (${okList.filter((c) => c.late).length} late)` : ''}</li></ul>
         <div class="sec">MISSING · ${miss.length}</div><ul class="${miss.length > 14 ? 'cols' : ''}">${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>`

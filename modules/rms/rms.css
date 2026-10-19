@@ -114,3 +114,19 @@ td.c small.cnt{display:block; font-size:10.5px; font-weight:600}
 .rcv-per [hidden]{display:none !important}
 details summary{cursor:pointer; color:var(--blue); font-size:12.5px; margin-top:6px}
 textarea.input{font-size:12.5px; line-height:1.5; resize:vertical}
+
+/* Checklist per account (accordions) – 19 Oct 2026 */
+details.acc{border:1px solid var(--line); border-radius:10px; background:#fff; margin-top:6px}
+details.acc[hidden]{display:none}
+details.acc > summary{display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer; font-size:13.5px; list-style:none}
+details.acc > summary::-webkit-details-marker{display:none}
+details.acc > summary:before{content:"▸"; color:var(--muted); width:10px}
+details.acc[open] > summary:before{content:"▾"}
+.acc-l{flex:1}
+.acc-n{font-size:12px; font-weight:700; padding:2px 8px; border-radius:10px; background:#eef2fa; color:var(--muted); white-space:nowrap}
+.acc-n.ok{background:#e8f6ec; color:var(--ok)} .acc-n.half{background:#fff4dc; color:#8a6500} .acc-n.none{background:#fdecec; color:var(--bad)}
+.acc-b{display:flex; flex-direction:column; gap:6px; padding:4px 14px 12px 34px; font-size:13.5px}
+.acc-b label{display:flex; align-items:center; gap:8px}
+.acc-list{max-height:380px; overflow:auto; padding-right:4px}
+#f-acc{max-height:380px; overflow:auto; padding-right:4px}
+#f-acc-none[hidden]{display:none}

@@ -4,7 +4,7 @@ import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { roleLine } from '../../js/views/admin.js';
 import { moduleFrame } from '../../js/frame.js';
-import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml, checklistHtml, itemsFor } from './receiving.js';
+import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml, checklistHtml, itemsFor, isGrouped, lineTally } from './receiving.js';
 
 // Load this module's look once.
 if (!document.querySelector('link[data-rms]')) {
@@ -267,8 +267,11 @@ function groupedOptions(rms, reports, selected) {
 
 /* ================= Submission Monitor ================= */
 // For reports with an office's own list (e.g. BRS per bank account): how many lines are in, e.g. "62/75".
+// With a checklist per line (account), the count is of complete accounts.
 const countOf = (x) => { const it = x.st && x.st.item; if (!it || !x.c.r.perOffice || !(it.checklist || []).length) return '';
-  const ck = it.checklist; return `<small class="cnt">${ck.filter((c) => c.ok).length}/${ck.length}</small>`; };
+  const ck = it.checklist;
+  if (isGrouped(ck)) { const t = lineTally(ck); return `<small class="cnt">${t.done.length}/${t.total}</small>`; }
+  return `<small class="cnt">${ck.filter((c) => c.ok).length}/${ck.length}</small>`; };
 function monitorHtml(refs, rms, q) {
   const scopes = scopesFor(refs);
   if (!scopes.length) return `<div class="msg bad">No team is assigned to you yet. Ask the Admin to set your team in Users &amp; Roles.</div>`;
@@ -340,7 +343,7 @@ function wireMonitor(refs, rms, q) {
         + row('Checklist', it.checklist ? checklistHtml(it) : '—')
         + row('History', historyHtml(it))
         : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}
-      ${row('Checklist required', r.perOffice ? `${itemsFor(r, o).length} ${esc((r.lineLabel || 'line').toLowerCase())}s (Office Setup)` : (r.checklist || []).map(esc).join(' · '))}`;
+      ${row('Checklist required', r.perOffice ? `${((o.lists || {})[r.id] || []).length} ${esc((r.lineLabel || 'line').toLowerCase())}s (Office Setup)${(r.checklist || []).length ? ', each with: ' + r.checklist.map(esc).join(' · ') : ''}` : (r.checklist || []).map(esc).join(' · '))}`;
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }; });
 }
@@ -431,8 +434,8 @@ async function editGroups(refs, rms) {
 function viewReport(rms, id) {
   const r = rms.reports.find((x) => x.id === id);
   modal({ title: `${r.code} · ${r.name}`, body: `<p><b>Schedule:</b> ${esc(r.frequency)} · ${esc(dueText(r))}</p><p><b>Group:</b> ${esc(groupName(rms, r) || 'No group')}${r.bulk ? ' · Bulk (always For Verification)' : ''}</p>${r.basis ? `<p><b>Legal basis:</b> ${esc(r.basis)}</p>` : ''}
-    ${r.perOffice ? `<p><b>Checklist:</b> each office has its own list (one line per ${esc((r.lineLabel || 'line').toLowerCase())}), set in Office Setup.</p>` : ''}
-    <div><span class="legend">${r.perOffice ? 'Each line includes' : 'Checklist'}</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}</li>`).join('')}</ol></div>` });
+    ${r.perOffice ? `<p><b>Checklist:</b> each office has its own list (one line per ${esc((r.lineLabel || 'line').toLowerCase())}), set in Office Setup; each ${esc((r.lineLabel || 'line').toLowerCase())} has the checklist below.</p>` : ''}
+    <div><span class="legend">${r.perOffice ? 'Checklist for each ' + esc((r.lineLabel || 'line').toLowerCase()) : 'Checklist'}</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}</li>`).join('')}</ol></div>` });
 }
 
 async function editReport(refs, rms, id) {
@@ -475,7 +478,7 @@ async function editReport(refs, rms, id) {
         nw.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = nw.value.trim(); if (v) { items.push(v); draw(); $('#r-new', bg).focus(); } } };
       };
       const perState = () => { const on = $('#r-per', bg).checked; $('#r-per-box', bg).hidden = !on;
-        $('#r-items-legend', bg).textContent = on ? 'What each line includes (a reminder for the receiver; optional)' : 'Checklist (documents that make up this report)'; };
+        $('#r-items-legend', bg).textContent = on ? 'Checklist for each line (e.g. BRS signed, bank statement, list of outstanding checks). Leave empty to tick each line as a whole.' : 'Checklist (documents that make up this report)'; };
       $('#r-per', bg).onchange = perState; perState();
       const dueState = () => { const k = $('#r-due', bg).value; $('.rms-due-n', bg).hidden = k === 'none'; $('#r-due-unit', bg).textContent = k === 'after' ? 'days after the period ends' : 'day of the following period'; };
       $('#r-due', bg).onchange = dueState; draw(); dueState();

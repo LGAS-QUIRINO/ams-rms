@@ -48,7 +48,8 @@ async function loadRms() {
   const [reports, offices, items, settings, groups] = await Promise.all([store.list('rms_reports'), store.list('rms_offices'), store.list('rms_items'), store.get('rms_settings', 'office'), store.get('rms_settings', 'groups')]);
   const now = new Date();
   return { reports: reports.map((r) => ({ id: r.id, ...r.data })), offices: offices.map((o) => ({ id: o.id, ...o.data })),
-    items: items.map((i) => ({ id: i.id, ...i.data })),
+    // _new: received on this computer but not yet sent to the AMS database (its number is not yet confirmed).
+    items: items.map((i) => ({ id: i.id, ...i.data, ...(i.pending && !i.version ? { _new: true } : {}) })),
     // Report groups made by the team (Report Library), in their set order.
     groups: (groups && groups.data && groups.data.list) || [],
     startPeriod: (settings && settings.data && settings.data.startPeriod) || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` };

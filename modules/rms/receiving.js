@@ -6,6 +6,8 @@
 import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { pdfToLines, parseDetails } from './pdfread.js';
+import { DEMO } from '../../js/config.js';
+import { syncNow } from '../../js/sync.js';
 import { scopesFor, visibleOffices, periodsOf, periodLabel, dueDate, span, fmtDT, fmtDate, jobOrderOnly, hasRole } from './rms.js';
 
 const by = (refs) => refs.me?.data.email || '';
@@ -87,8 +89,8 @@ export function receivingHtml(refs, rms, q) {
   const off = (id) => offs.find((o) => o.id === id);
   const rep = (id) => rms.reports.find((r) => r.id === id);
   const what = (i) => i.kind === 'comm' ? 'Communication · ' + esc(i.subject || '') : esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period));
-  const cols = 'grid-template-columns:minmax(190px,1.2fr) minmax(170px,1fr) 120px 170px 170px';
-  const row = (i, acts) => `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span>
+  const cols = 'grid-template-columns:minmax(190px,1.2fr) minmax(170px,1fr) 120px 220px 170px';
+  const row = (i, acts) => `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b>${i._new ? '<br><small class="warn-t">not yet confirmed</small>' : ''}</span>
     <span>${esc(i.kind === 'comm' && !i.officeId ? i.fromOutside : off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
     <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span>${statusPill(i)}</span><span class="acts">${acts}</span></div>`;
   const groups = rms.groups || [];
@@ -105,7 +107,7 @@ export function receivingHtml(refs, rms, q) {
       ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
     <section class="panel"><div class="panel-head"><h2>${jo ? 'Received by You' : 'Recently Received'}</h2></div>
       ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Item</span><span>Received</span><span>Status</span><span></span></div>
-        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button><button class="btn sm" data-slip="${i.id}">Slip</button>${lacksDocs(i) ? `<button class="btn sm" data-late="${i.id}">Late Docs</button>` : ''}`)).join('')}`
+        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${lacksDocs(i) ? `<button class="btn sm" data-late="${i.id}">Late Docs</button>` : ''}`)).join('')}`
         : `<div class="empty"><b>${g === 'all' ? 'Nothing received yet' : 'Nothing received in this group'}</b>${g === 'all' ? 'Use + Receive Documents to record the first submission.' : 'Choose All groups to see everything.'}</div>`}</section>`;
 }
 
@@ -312,13 +314,24 @@ async function receiveForm(refs, rms) {
   if (res !== 'save') return;
   const id = newId('rcv');
   await store.save('rms_items', id, out, by(refs));
-  const saved = { id, ...out };
+  let saved = { id, ...out }, confirmed = DEMO;
+  // Connected: the AMS database gives the tracking number, so two people receiving at once never share a number.
+  if (!DEMO && navigator.onLine) {
+    toast('Getting the tracking number from the AMS database…');
+    for (let k = 0; k < 3 && !confirmed; k++) {
+      const problems = await syncNow();
+      const rec = await store.get('rms_items', id);
+      if (!rec) { toast('Not saved: ' + (problems[0] || 'the database refused it.'), 'bad'); return; }
+      if (!rec.pending) { saved = { id, ...rec.data }; confirmed = true; }
+    }
+  }
   const again = await modal({
-    title: 'Saved · Tracking Number',
-    body: `<div class="rcv-done"><small>TRACKING NUMBER</small><b>${esc(numberOf(out))}</b></div>
-      <p>Status: ${statusPill(out)}</p>
-      <p>Write this number on the RECEIVED stamp, then print the slip for the submitter.${isVerify(out) ? ' An auditor will accept or reject it.' : ''}</p>`,
-    buttons: [{ label: 'Done', value: null }, { label: 'Receive Another', value: 'again' }, { label: 'Print Slip', cls: 'primary', value: 'slip' }]
+    title: confirmed ? 'Saved · Tracking Number' : 'Saved on This Computer · Number Not Yet Confirmed',
+    body: `<div class="rcv-done ${confirmed ? '' : 'pend'}"><small>${confirmed ? 'TRACKING NUMBER' : 'NUMBER NOT YET CONFIRMED'}</small><b>${esc(numberOf(saved))}</b></div>
+      <p>Status: ${statusPill(saved)}</p>
+      ${confirmed ? `<p>Write this number on the RECEIVED stamp, then print the slip for the submitter.${isVerify(saved) ? ' An auditor will accept or reject it.' : ''}</p>`
+        : `<p>No connection to the AMS database right now. It is saved on this computer and will be sent automatically; the number may still change when it is sent. Print the slip (Recently Received → Slip) once the number is confirmed.</p>`}`,
+    buttons: [{ label: 'Done', value: null }, { label: 'Receive Another', value: 'again' }, ...(confirmed ? [{ label: 'Print Slip', cls: 'primary', value: 'slip' }] : [])]
   });
   if (again === 'slip') printSlip(refs, rms, saved);
   if (again === 'again') receiveForm(refs, { ...rms, items: [...rms.items, saved] });
@@ -344,7 +357,7 @@ async function decide(refs, rms, id) {
   });
   if (res !== 'save') return;
   const decision = { action: out.action, remarks: out.remarks, by: by(refs), byName: myName(refs), at: new Date().toISOString() };
-  const { id: _x, ...data } = i;
+  const { id: _x, _new: _n, ...data } = i;
   if (out.action === 'accept') {
     // Older records received before this rule may still need their tracking number.
     const t = data.trackingNo ? {} : trackingNo(rms, { id: i.officeId, code: i.officeCode }, i.reportCode, +i.period.slice(0, 4));
@@ -372,7 +385,7 @@ async function addLate(refs, rms, id) {
   const at = new Date().toISOString();
   const checklist = i.checklist.map((c, k) => picked.includes(k) ? { ...c, ok: true, at, late: true, by: by(refs), byName: myName(refs) } : c);
   const done = checklist.every((c) => c.ok);
-  const { id: _x, ...data } = i;
+  const { id: _x, _new: _n, ...data } = i;
   // The status (For Verification / Accepted) stays; the history shows this as the next submission.
   await store.save('rms_items', id, { ...data, checklist, ...(done ? { completedAt: at } : {}) }, by(refs));
   toast(done ? 'Saved. All documents are now submitted.' : 'Saved. Still missing some documents.', 'ok');

@@ -1,5 +1,5 @@
 // Keeps AMS working offline. Online it always loads the newest files; offline it uses the saved copy.
-const RELEASE = 'v0.6.3-rms';
+const RELEASE = 'v0.7.0-rms';
 const VERSION = 'ams|' + self.registration.scope + '|' + RELEASE;
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'img/coa-logo.png', 'img/icon-192.png', 'img/icon-512.png',

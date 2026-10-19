@@ -24,13 +24,41 @@ export function unpackItem(d) {
   if (!d || !Array.isArray(d.checklist)) return d;
   return { ...d, checklist: d.checklist.map((c) => (c.item || !(c.line && c.part) ? c : { ...c, item: `${c.line} · ${c.part}` })) };
 }
-const saveItem = (id, data, who) => store.save('rms_items', id, packItem(data), who);
+const saveItem = (id, data, who, opts) => store.save('rms_items', id, packItem(data), who, opts);
+
+// Adds a batch that came in (ticked documents, N/A parts) to a record, with its date received. A batch dated earlier than
+// the record's first submission (back-encoding out of order) becomes the 1st submission; the earlier-entered batch then
+// counts as a later one. The tracking number never changes.
+export function applyBatch(i, picked, pickedNa, at, who, whoName) {
+  const enc = new Date().toISOString(), earlier = at < i.receivedAt;
+  const ck = (i.checklist || []).map((c, k) => {
+    let x = earlier && c.ok && !c.late ? { ...c, late: true, byName: c.byName || i.receivedByName, encodedAt: c.encodedAt || i.encodedAt } : c;
+    if (picked.includes(k)) x = { ...x, ok: true, at, encodedAt: enc, late: !earlier, byName: whoName };
+    else if (pickedNa.includes(k)) x = { ...x, na: true, naAt: enc, naBy: whoName };
+    return x;
+  });
+  const { id: _x, _new: _n, ...data } = i;
+  const next = { ...data, checklist: ck, ...(earlier ? { receivedAt: at, receivedBy: who, receivedByName: whoName, encodedAt: enc } : {}) };
+  if (ck.every(isIn)) next.completedAt = ck.reduce((m, c) => (c.ok && c.at > m ? c.at : m), ''); else delete next.completedAt;
+  return next;
+}
+// The record already received for an office, report and period (not rejected), if any.
+export const existingFor = (rms, officeId, reportId, period) => rms.items.filter((i) => i.kind !== 'comm' && i.officeId === officeId && i.reportId === reportId && i.period === period && i.status !== 'rejected')
+  .sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt)))[0] || null;
 const missing = (i) => (i.checklist || []).filter((c) => !isIn(c));
 
 // Auditors who accept or reject: ATL, Team Members, SA and Admin (not JO or OSA Staff).
 export const canDecide = (refs) => hasRole(refs, 'atl', 'member', 'sa', 'admin');
 // Who may correct a received record (wrong ticks, date, period, names): Admin and SA only.
 export const canCorrect = (refs) => hasRole(refs, 'admin', 'sa');
+// Combining records of the same office, report and period received more than once: Admin only (it removes records).
+export const canCombine = (refs) => hasRole(refs, 'admin');
+const dupKey = (i) => `${i.officeId}|${i.reportId}|${i.period}`;
+export function duplicateGroups(rms, offIds) {
+  const g = {};
+  rms.items.filter((i) => i.kind !== 'comm' && i.status !== 'rejected' && offIds.has(i.officeId) && !i._new).forEach((i) => { (g[dupKey(i)] = g[dupKey(i)] || []).push(i); });
+  return Object.entries(g).filter(([, l]) => l.length > 1).map(([key, l]) => ({ key, list: l.sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt))) }));
+}
 // Status helpers. Older records may still say 'pending' (= For Verification) or 'complete' (= accepted).
 export const isVerify = (i) => i.kind !== 'comm' && (i.status === 'verify' || i.status === 'pending');
 export const isAccepted = (i) => i.status === 'accepted' || i.status === 'complete';
@@ -170,13 +198,15 @@ export function historyOf(i) {
   ck.forEach((c, k) => { if (c.ok && c.late) (late[c.at] = late[c.at] || []).push({ ...c, k }); });
   Object.keys(late).sort().forEach((at, k) => {
     const got = late[at]; have += got.length;
-    const names = got.length > 5 ? got.slice(0, 5).map((c) => c.item).join('; ') + `; and ${got.length - 5} more` : got.map((c) => c.item).join('; ');
+    // Per account: name the accounts (not every part); otherwise the documents.
+    const nm = grp && got.every((c) => c.line) ? [...new Set(got.map((c) => c.line))] : got.map((c) => c.item);
+    const names = nm.length > 5 ? nm.slice(0, 5).join('; ') + `; and ${nm.length - 5} more` : nm.join('; ');
     const nl = laterNote(at, got[0].encodedAt, got[0].byName);
     got.forEach((c) => inSoFar.add(c.k));
     ev.push({ at, who: nl ? '' : got[0].byName || '', text: grp ? `${ordinal(k + 2)} submission · +${got.length} late part${got.length > 1 ? 's' : ''} (${names}) · ${acct()}${nl ? ' (' + nl + ')' : ''}`
       : `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}${nl ? ' (' + nl + ')' : ''}` });
   });
-  (i.corrections || []).forEach((c) => ev.push({ at: c.at, who: c.byName, decision: true, text: `Corrected · ${c.reason}${c.changes && c.changes.length ? ' (' + c.changes.join('; ') + ')' : ''}` }));
+  (i.corrections || []).forEach((c) => ev.push({ at: c.at, who: c.byName, decision: true, text: `${c.combine ? 'Combined' : 'Corrected'} · ${c.reason}${c.changes && c.changes.length ? ' (' + c.changes.join('; ') + ')' : ''}` }));
   if (i.decision) ev.push({ at: i.decision.at, who: i.decision.byName, decision: true,
     text: (i.decision.action === 'accept' ? 'Accepted' : 'Rejected') + (i.decision.remarks ? ' · ' + i.decision.remarks : '') });
   return ev.sort((a, b) => String(a.at).localeCompare(String(b.at)));
@@ -202,6 +232,7 @@ export function receivingHtml(refs, rms, q) {
   const recent = mine.filter(inGroup).sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt))).slice(0, 30);
   const verify = canDecide(refs) ? rms.items.filter((i) => offIds.has(i.officeId) && isVerify(i) && inGroup(i)) : [];
   const lacking = rms.items.filter((i) => offIds.has(i.officeId) && lacksDocs(i) && !isVerify(i) && inGroup(i));
+  const dups = canCombine(refs) ? duplicateGroups(rms, offIds) : [];
   const off = (id) => offs.find((o) => o.id === id);
   const rep = (id) => rms.reports.find((r) => r.id === id);
   const what = (i) => i.kind === 'comm' ? 'Communication · ' + esc(i.subject || '') : esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period));
@@ -219,6 +250,11 @@ export function receivingHtml(refs, rms, q) {
       ${verify.map((i) => { const m = missing(i), n = (i.checklist || []).length; return `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span><span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
         <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${isGrouped(i.checklist) ? (() => { const t = lineTally(i.checklist); return `${t.done.length} of ${t.total} ${esc(((i.lineLabel || 'account') + 's').toLowerCase())} complete${t.part.length ? `<br>${t.part.length} missing parts` : ''}${t.none.length ? `<br>${t.none.length} not submitted` : ''}`; })() : `${n - m.length} of ${n} submitted`}${isGrouped(i.checklist) ? '' : m.length ? '<br>Missing: ' + (m.length > 3 ? m.slice(0, 3).map((c) => esc(c.item)).join('; ') + `; and ${m.length - 3} more` : m.map((c) => esc(c.item)).join('; ')) : ''}</small></span>
         <span class="acts"><button class="btn sm primary" data-decide="${i.id}">Accept / Reject</button><button class="btn sm" data-view="${i.id}">View</button></span></div>`; }).join('')}</section>` : ''}
+    ${dups.length ? `<section class="panel"><div class="panel-head"><h2>Same Period Received More Than Once · ${dups.length}</h2></div>
+      <div class="note">Each of these was received as separate records. Combine them into one record (the earliest keeps its tracking number); the others are removed and noted in its history.</div>
+      ${dups.map((d) => { const f = d.list[0]; return `<div class="t-row" style="${cols}"><span class="mono">${d.list.map((i) => `<b>${esc(numberOf(i))}</b>`).join('<br>')}</span>
+        <span>${esc(off(f.officeId)?.label || '')}<br><small>${what(f)}</small></span><span><small>${d.list.map((i) => esc(fmtDate(i.receivedAt))).join('<br>')}</small></span><span><small>${d.list.length} records</small></span>
+        <span class="acts"><button class="btn sm primary" data-combine="${esc(d.key)}">Combine</button></span></div>`; }).join('')}</section>` : ''}
     ${lacking.length ? `<section class="panel"><div class="panel-head"><h2>Accepted, Still Missing Documents · ${lacking.length}</h2></div>
       ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
     <section class="panel"><div class="panel-head"><h2>${jo ? 'Received by You' : 'Recently Received'}</h2></div>
@@ -234,6 +270,7 @@ export function wireReceiving(refs, rms, q, rerender) {
   $$('[data-late]').forEach((b) => { b.onclick = () => addLate(refs, rms, b.dataset.late); });
   $$('[data-view]').forEach((b) => { b.onclick = () => viewItem(refs, rms, b.dataset.view); });
   $$('[data-fix]').forEach((b) => { b.onclick = () => correctItem(refs, rms, b.dataset.fix); });
+  $$('[data-combine]').forEach((b) => { b.onclick = () => combineItems(refs, rms, b.dataset.combine); });
   $$('[data-slip]').forEach((b) => { b.onclick = () => printSlip(refs, rms, rms.items.find((i) => i.id === b.dataset.slip)); });
   if (q.get('new') === '1') { history.replaceState(null, '', '#/rms/receiving'); receiveForm(refs, rms); }
 }
@@ -246,7 +283,7 @@ async function receiveForm(refs, rms) {
   const now = new Date(), year = now.getFullYear();
   const auditor = canDecide(refs);
   const groupName = (id) => (rms.groups || []).find((x) => x.id === id)?.name || '';
-  let out = null;
+  let out = null, ex = null;   // ex: the record already received for the chosen office, report and period
   const res = await modal({
     title: 'Receive Documents', wide: true,
     body: `<div class="rcv-pdf"><label class="btn sm" for="f-pdf">Upload PDF to fill in</label><input type="file" id="f-pdf" accept="application/pdf,.pdf" hidden>
@@ -258,6 +295,7 @@ async function receiveForm(refs, rms) {
       <div id="rep-part">
         <div class="two"><div class="field"><label for="f-rep">Report</label><select class="input" id="f-rep"></select></div>
           <div class="field"><label for="f-per">Period</label><select class="input" id="f-per"></select><span class="hint" id="f-due"></span></div></div>
+        <div class="rcv-exist" id="f-exist" hidden></div>
         <div><span class="legend">Checklist · tick what was actually submitted</span><div id="f-list" class="rcv-list"></div><span class="hint" id="f-state"></span></div>
         <div id="f-dec" class="rcv-dec">${auditor ? `<span class="legend">Your decision</span>
           <div class="rcv-type"><label><input type="radio" name="rdec" value="verify" checked> For Verification</label><label><input type="radio" name="rdec" value="accept"> Accept</label><label><input type="radio" name="rdec" value="reject"> Reject</label></div>
@@ -314,14 +352,32 @@ async function receiveForm(refs, rms) {
         const def = tracked.find((p) => !got.has(p)) || ps[ps.length - 1];
         $('#f-per', bg).innerHTML = ps.reverse().map((p) => `<option value="${p}" ${p === def ? 'selected' : ''}>${esc(periodLabel(p))}${got.has(p) ? ' · already received' : ''}</option>`).join('')
           + (r.frequency === 'As needed' ? `<option value="${year}">${year} (as needed)</option>` : '');
-        const ents = entriesFor(r, o), items = ents.map((e) => e.item);
+        fillList();
+      };
+      // The same office, report and period already received: this batch is added to that record (same tracking number),
+      // and only what is still missing is listed.
+      const fillList = () => {
+        const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value), o = office(), p = $('#f-per', bg).value;
+        if (!r || !o) return;
+        ex = p ? existingFor(rms, o.id, r.id, p) : null;
+        const box = $('#f-exist', bg);
+        if (ex) {
+          const t = isGrouped(ex.checklist) ? lineTally(ex.checklist) : null, m = missing(ex).length;
+          box.innerHTML = `<b>${esc(periodLabel(p))} ${esc(r.code)} was already received: <span class="mono">${esc(numberOf(ex))}</span></b> (first ${esc(fmtDate(ex.receivedAt))})<br>
+            ${t ? `${t.done.length} of ${t.total} ${esc(((ex.lineLabel || 'account') + 's').toLowerCase())} complete so far.` : `${(ex.checklist || []).length - m} of ${(ex.checklist || []).length} submitted so far.`}
+            What you tick now is <b>added to that record</b> as its next submission, with the date received below. Only what is still missing is listed.`;
+        }
+        box.hidden = !ex;
+        const ents = ex ? ex.checklist : entriesFor(r, o), items = ents.map((e) => e.item);
+        if (ex && !missing(ex).length) { $('#f-list', bg).innerHTML = '<p class="ok-t">Everything for this period is already in. Nothing to add.</p>'; dueHint(); state(); decState(); return; }
         if (isGrouped(ents)) return groupedList(r, o, ents);
-        const many = items.length > LONG;
+        const show = ents.map((e, k) => ({ e, k })).filter(({ e }) => !ex || !isIn(e));
+        const many = show.length > LONG;
         $('#f-list', bg).innerHTML = (r.perOffice && !(o.lists && (o.lists[r.id] || []).length)
           ? `<p class="warn-t">No ${esc((r.lineLabel || 'line').toLowerCase())}s are listed for this office yet. Add them in Office Setup (${esc(r.code)}).</p>` : '')
           + (r.perOffice && (r.checklist || []).length ? `<small>Each ${esc((r.lineLabel || 'line').toLowerCase())} includes: ${esc(r.checklist.join(', '))}</small>` : '')
-          + (many ? `<input class="input" id="f-find" placeholder="Search ${items.length} ${r.perOffice ? esc((r.lineLabel || 'line').toLowerCase()) + 's' : 'items'}">` : '')
-          + `<div class="rcv-items${many ? ' long' : ''}">${items.map((t, k) => `<label data-t="${esc(t.toLowerCase())}"><input type="checkbox" name="ck" value="${k}"> ${esc(t)}</label>`).join('')}</div>`
+          + (many ? `<input class="input" id="f-find" placeholder="Search ${show.length} ${r.perOffice ? esc((r.lineLabel || 'line').toLowerCase()) + 's' : 'items'}">` : '')
+          + `<div class="rcv-items${many ? ' long' : ''}">${show.map(({ e, k }) => `<label data-t="${esc(e.item.toLowerCase())}"><input type="checkbox" name="ck" value="${k}"> ${esc(e.item)}</label>`).join('')}</div>`
           + `<div class="btn-row"><button type="button" class="btn sm" id="f-all">Tick all</button>${many ? '<button type="button" class="btn sm" id="f-none">Untick all</button>' : ''}</div>`;
         $('#f-all', bg).onclick = () => { $$('input[name=ck]', bg).forEach((x) => { x.checked = true; }); state(); };
         if ($('#f-none', bg)) $('#f-none', bg).onclick = () => { $$('input[name=ck]', bg).forEach((x) => { x.checked = false; }); state(); };
@@ -331,15 +387,16 @@ async function receiveForm(refs, rms) {
       };
       // Reports with parts per line (e.g. BRS per bank account): 1) select the accounts that came in, 2) each opens to its parts.
       const groupedList = (r, o, ents) => {
-        const lines = linesOf(ents).map(([l]) => l), lbl = (r.lineLabel || 'Line').toLowerCase(), many = lines.length > 8;
-        const other = ents.map((e, k) => ({ ...e, k })).filter((e) => !(e.line && e.part));
+        // With an existing record: accounts already complete are left out; the others show only their missing parts.
+        const lines = linesOf(ents).filter(([, es]) => !ex || !es.every(isIn)).map(([l]) => l), lbl = (r.lineLabel || 'Line').toLowerCase(), many = lines.length > 8;
+        const other = ents.map((e, k) => ({ ...e, k })).filter((e) => !(e.line && e.part) && (!ex || !isIn(e)));
         $('#f-list', bg).innerHTML = `<small>Each ${esc(lbl)} includes: ${esc(r.checklist.join(', '))}</small>
-          <span class="legend">1. Select the ${esc(lbl)}s that came in</span>
+          <span class="legend">1. Select the ${esc(lbl)}s that came in${ex ? ` (${lines.length} still incomplete)` : ''}</span>
           ${many ? `<input class="input" id="f-find" placeholder="Search ${lines.length} ${esc(lbl)}s">` : ''}
           <div class="rcv-items acct-pick${many ? ' long' : ''}">${lines.map((l, li) => `<label data-t="${esc(l.toLowerCase())}"><input type="checkbox" name="acct" value="${li}"> ${esc(l)}</label>`).join('')}</div>
           <div class="btn-row"><button type="button" class="btn sm" id="f-sel-all">Select all</button><button type="button" class="btn sm" id="f-sel-none">Clear</button></div>
           <span class="legend">2. Tick the parts submitted for each ${esc(lbl)}</span>
-          <div id="f-acc">${accordionHtml(ents.map((e) => ({ ...e, ok: false })), { name: 'ck', hideAll: true })}<p class="hint" id="f-acc-none">Select a ${esc(lbl)} above.</p></div>
+          <div id="f-acc">${accordionHtml(ex ? ents : ents.map((e) => ({ ...e, ok: false })), { name: 'ck', hideAll: true, onlyMissing: !!ex, checked: () => false, naChecked: () => false })}<p class="hint" id="f-acc-none">Select a ${esc(lbl)} above.</p></div>
           ${other.length ? `<span class="legend">Also required</span><div class="rcv-items">${other.map((e) => `<label><input type="checkbox" name="ck" value="${e.k}"> ${esc(e.item)}</label>`).join('')}</div>` : ''}`;
         const accs = $$('details.acc', bg);
         const pick = () => {
@@ -347,7 +404,7 @@ async function receiveForm(refs, rms) {
           accs.forEach((d) => { const show = on.has(d.dataset.line); if (!show) { $$('input[name=ck], input[name=ck-na]', d).forEach((x) => { x.checked = false; }); d.open = false; } d.hidden = !show; });
           $('#f-acc-none', bg).hidden = on.size > 0; updAcc(); state();
         };
-        const updAcc = wireAccordions(bg, 'ck', () => state());
+        const updAcc = wireAccordions(bg, 'ck', () => state(), (d) => (ex ? ex.checklist.filter((c) => c.line === d.dataset.line && isIn(c)).length : 0));
         $$('input[name=acct]', bg).forEach((x) => { x.onchange = () => { pick(); const d = accs.find((a) => a.dataset.line === lines[+x.value]); if (x.checked && d) d.open = true; }; });
         $('#f-sel-all', bg).onclick = () => { $$('input[name=acct]', bg).forEach((x) => { if (!x.closest('label').hidden) x.checked = true; }); pick(); };
         $('#f-sel-none', bg).onclick = () => { $$('input[name=acct]', bg).forEach((x) => { x.checked = false; }); pick(); };
@@ -363,17 +420,19 @@ async function receiveForm(refs, rms) {
           const accs = $$('details.acc', bg), sel = accs.filter((d) => !d.hidden);
           const full = sel.filter((d) => $$('input[name=ck]', d).every((x) => x.checked || ($(`input[name=ck-na][value="${x.value}"]`, d) || {}).checked)).length;
           const empty = sel.filter((d) => !$$('input[name=ck]', d).some((x) => x.checked)).length;
-          $('#f-state', bg).innerHTML = `<b class="${full === accs.length ? 'ok-t' : 'warn-t'}">${full} of ${accs.length} complete</b> · ${sel.length} selected`
+          const before = ex ? lineTally(ex.checklist).done.length : 0, total = before + accs.length;
+          $('#f-state', bg).innerHTML = `<b class="${before + full === total ? 'ok-t' : 'warn-t'}">${before + full} of ${total} complete</b>${ex ? ` (${before} before + ${full} now)` : ''} · ${sel.length} selected`
             + (sel.length - full - empty ? ` · ${sel.length - full - empty} missing parts` : '') + (empty ? ` · <span class="warn-t">${empty} selected with no parts ticked</span>` : '')
-            + ` · ${accs.length - sel.length} not submitted`;
+            + ` · ${accs.length - sel.length} still not submitted`;
           return;
         }
-        const all = $$('input[name=ck]', bg), ticked = all.filter((x) => x.checked).length;
-        $('#f-state', bg).innerHTML = !all.length ? '' : ticked === all.length ? `<b class="ok-t">All ${all.length} submitted</b>`
-          : `<b class="warn-t">${ticked} of ${all.length} submitted</b> · ${all.length - ticked} missing`;
+        const all = $$('input[name=ck]', bg), ticked = all.filter((x) => x.checked).length, before = ex ? (ex.checklist || []).filter(isIn).length : 0, total = before + all.length;
+        $('#f-state', bg).innerHTML = !all.length ? '' : before + ticked === total ? `<b class="ok-t">All ${total} submitted</b>`
+          : `<b class="warn-t">${before + ticked} of ${total} submitted</b> · ${total - before - ticked} missing`;
       };
       // The decision at receipt: JO and OSA Staff always For Verification; auditors choose, except for bulk reports.
       const decState = () => {
+        $('#f-dec', bg).hidden = !!ex;   // adding to an existing record keeps its status
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
         const bulk = !!(r && r.bulk);
         $$('input[name=rdec]', bg).forEach((x) => { x.closest('.rcv-type').hidden = bulk; });
@@ -393,7 +452,7 @@ async function receiveForm(refs, rms) {
       const ready = scopes.find((s) => s.id === last) || scopes.find((s) => offs.some((o) => o.munId === s.id && o.code));
       if (ready) $('#f-mun', bg).value = ready.id;
       $('#f-mun', bg).onchange = () => { try { localStorage.setItem('rms-last-mun', $('#f-mun', bg).value); } catch (e) { /* ignore */ } fillOffices(); };
-      $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = dueHint; $('#f-date', bg).onchange = dueHint;
+      $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = fillList; $('#f-date', bg).onchange = dueHint;
       // Picking a usual submitter fills in the designation right away (not on leaving the field).
       $('#f-by', bg).oninput = () => { const opt = [...$('#f-by-list', bg).options].find((x) => x.value === $('#f-by', bg).value); if (opt && !$('#f-des', bg).value) $('#f-des', bg).value = opt.textContent; };
       // Upload PDF to fill in (reports and communications). Scanned PDFs are read only when the receiver asks.
@@ -451,14 +510,18 @@ async function receiveForm(refs, rms) {
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
         if (!r) { toast('This office has no report ticked. Tick its reports in Office Setup first.', 'bad'); return false; }
         const period = $('#f-per', bg).value;
-        const ents = entriesFor(r, o);
+        const ents = ex ? ex.checklist : entriesFor(r, o);
         if (!ents.length) { toast(`No ${(r.lineLabel || 'line').toLowerCase()}s are listed for this office yet. Add them in Office Setup.`, 'bad'); return false; }
         const ticked = new Set($$('input[name=ck]:checked', bg).map((x) => +x.value));
-        if (!ticked.size) { toast('Tick at least one document received.', 'bad'); return false; }
-        const bare = $$('details.acc', bg).find((d) => !d.hidden && !$$('input[name=ck]', d).some((x) => x.checked));
-        if (bare) { toast(`Tick the parts submitted for ${bare.dataset.line}, or unselect it.`, 'bad'); bare.open = true; return false; }
-        const at = base.receivedAt;
         const naSet = new Set($$('input[name=ck-na]:checked', bg).map((x) => +x.value));
+        if (!ticked.size && !(ex && naSet.size)) { toast(ex && !missing(ex).length ? 'Everything for this period is already in.' : 'Tick at least one document received.', 'bad'); return false; }
+        const bare = $$('details.acc', bg).find((d) => !d.hidden && !$$('input[name=ck], input[name=ck-na]', d).some((x) => x.checked));
+        if (bare) { toast(`Tick the parts submitted for ${bare.dataset.line}, or unselect it.`, 'bad'); bare.open = true; return false; }
+        if (ex) {   // added to the record already received for this period
+          out = { addTo: ex, next: applyBatch(ex, [...ticked], [...naSet].filter((k) => !ticked.has(k)), when.iso, by(refs), myName(refs)) };
+          return true;
+        }
+        const at = base.receivedAt;
         const checklist = ents.map((e, k) => ({ ...e, ok: ticked.has(k), at: ticked.has(k) ? at : '', ...(naSet.has(k) && !ticked.has(k) ? { na: true } : {}) }));
         const allIn = checklist.every(isIn);
         const yr = +period.slice(0, 4);
@@ -482,6 +545,23 @@ async function receiveForm(refs, rms) {
     } }]
   });
   if (res !== 'save') return;
+  if (out.addTo) {
+    const id = out.addTo.id;
+    await saveItem(id, out.next, by(refs));
+    let saved = { id, ...out.next };
+    if (!DEMO && navigator.onLine) { await syncNow(); const rec = await store.get('rms_items', id); if (rec && !rec.pending) saved = { id, ...unpackItem(rec.data) }; }
+    const t = isGrouped(saved.checklist) ? lineTally(saved.checklist) : null, m = missing(saved).length;
+    const again = await modal({
+      title: 'Added · Same Tracking Number',
+      body: `<div class="rcv-done"><small>ADDED TO</small><b>${esc(numberOf(saved))}</b></div>
+        <p>${t ? `${t.done.length} of ${t.total} ${esc(((saved.lineLabel || 'account') + 's').toLowerCase())} complete now.` : `${(saved.checklist || []).length - m} of ${(saved.checklist || []).length} submitted now.`}${m ? '' : ' Everything is in.'}</p>
+        <p>Print the slip again so the office gets an updated acknowledgment.</p>`,
+      buttons: [{ label: 'Done', value: null }, { label: 'Receive Another', value: 'again' }, { label: 'Print Slip', cls: 'primary', value: 'slip' }]
+    });
+    if (again === 'slip') printSlip(refs, rms, saved);
+    if (again === 'again') receiveForm(refs, { ...rms, items: rms.items.map((x) => (x.id === id ? saved : x)) });
+    return;
+  }
   const id = newId('rcv');
   await saveItem(id, out, by(refs));
   let saved = { id, ...out }, confirmed = DEMO;
@@ -576,18 +656,12 @@ async function addLate(refs, rms, id) {
       if (!picked.length && !pickedNa.length) { toast('Tick the documents received (or mark optional ones N/A).', 'bad'); return false; }
       when = readWhen($('#l-date', bg).value);
       if (when.err) { toast(when.err, 'bad'); return false; }
-      if (when.iso < i.receivedAt) { toast('The date cannot be before the first submission (' + fmtDate(i.receivedAt) + ').', 'bad'); return false; }
       return true; } }]
   });
   if (res !== 'save') return;
-  const at = when.iso, encodedAt = new Date().toISOString();
-  const checklist = i.checklist.map((c, k) => picked.includes(k) ? { ...c, ok: true, at, encodedAt, late: true, by: by(refs), byName: myName(refs) }
-    : pickedNa.includes(k) ? { ...c, na: true, naAt: encodedAt, naBy: myName(refs) } : c);
-  const done = checklist.every(isIn);
-  const { id: _x, _new: _n, ...data } = i;
   // The status (For Verification / Accepted) stays; the history shows this as the next submission.
-  const lastIn = checklist.reduce((m, c) => (c.at > m ? c.at : m), '');
-  await saveItem(id, { ...data, checklist, ...(done ? { completedAt: lastIn } : {}) }, by(refs));
+  const next = applyBatch(i, picked, pickedNa, when.iso, by(refs), myName(refs)), done = !!next.completedAt;
+  await saveItem(id, next, by(refs));
   toast(done ? 'Saved. All documents are now submitted.' : 'Saved. Still missing some documents.', 'ok');
 }
 
@@ -607,6 +681,48 @@ async function viewItem(refs, rms, id) {
     ${i.remarks ? row('Remarks', esc(i.remarks)) : ''}`,
     buttons: [{ label: 'Close', value: null, cls: canCorrect(refs) && !i._new ? '' : 'primary' }, ...(canCorrect(refs) && !i._new ? [{ label: 'Correct', cls: 'primary', value: 'fix' }] : [])] })
     .then((v) => { if (v === 'fix') correctItem(refs, rms, id); });
+}
+
+/* ---------- combining records of the same period (Admin only) ---------- */
+// The earliest-received record keeps its tracking number. Every document submitted in any of them is kept with its own
+// date (the earliest when it appears in more than one); the other records are removed and listed in the history.
+async function combineItems(refs, rms, key) {
+  if (!canCombine(refs)) return toast('Only the Admin can combine records.', 'bad');
+  const offIds = new Set(visibleOffices(refs, rms, scopesFor(refs).map((s) => s.id)).map((o) => o.id));
+  const grp = duplicateGroups(rms, offIds).find((d) => d.key === key); if (!grp) return;
+  const [keep, ...rest] = grp.list;
+  const done = (i) => isGrouped(i.checklist) ? (() => { const t = lineTally(i.checklist); return `${t.done.length} of ${t.total} complete`; })() : `${(i.checklist || []).filter(isIn).length} of ${(i.checklist || []).length} submitted`;
+  let why = '';
+  const res = await modal({
+    title: 'Combine Records',
+    body: `<p>These were received as separate records for the same office, report and period:</p>
+      <ul class="rcv-ck">${grp.list.map((i, k) => `<li class="${k ? 'miss' : 'ok'}"><b class="mono">${esc(numberOf(i))}</b> · received ${esc(fmtDate(i.receivedAt))} · ${esc(done(i))} · ${esc(statusText(i))}${k ? ' — will be removed' : ' — keeps its number'}</li>`).join('')}</ul>
+      <div class="field"><label for="cb-why">Reason (required)</label><input class="input" id="cb-why" value="Same period encoded as separate receipts"></div>`,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Combine', cls: 'primary', value: 'go', check: (bg) => { why = $('#cb-why', bg).value.trim(); if (!why) { toast('Enter the reason.', 'bad'); return false; } return true; } }]
+  });
+  if (res !== 'go') return;
+  const first = grp.list[0].receivedAt;
+  const ck = (keep.checklist || []).map((c) => ({ ...c }));
+  const at = (c, i) => c.at || i.receivedAt;
+  const merge = (c, i) => {
+    const k = ck.findIndex((x) => x.item === c.item);
+    const src = c.ok ? { ...c, at: at(c, i), byName: c.byName || i.receivedByName, encodedAt: c.encodedAt || i.encodedAt } : c;
+    if (k < 0) { ck.push(src); return; }
+    if (c.ok && (!ck[k].ok || at(c, i) < at(ck[k], keep))) ck[k] = { ...ck[k], ...src };
+    else if (c.na && !ck[k].ok && !ck[k].na) ck[k] = { ...ck[k], na: true, naAt: c.naAt, naBy: c.naBy };
+  };
+  rest.forEach((i) => (i.checklist || []).forEach((c) => merge(c, i)));
+  // The earliest date is the 1st submission; documents that came later are late documents.
+  const checklist = ck.map((c) => (c.ok ? { ...c, late: c.at > first, ...(c.at > first ? { byName: c.byName || keep.receivedByName } : {}) } : c));
+  const accepted = grp.list.find((i) => i.status === 'accepted' || i.status === 'complete');
+  const { id: _x, _new: _n, ...data } = keep;
+  const next = { ...data, checklist, status: accepted ? 'accepted' : keep.status, ...(accepted && accepted.decision ? { decision: accepted.decision } : {}),
+    combined: [...(keep.combined || []), ...rest.map((i) => i.trackingNo || numberOf(i))],
+    corrections: [...(keep.corrections || []), { at: new Date().toISOString(), by: by(refs), byName: myName(refs), reason: why, combine: true, changes: [`${rest.map(numberOf).join(', ')} combined into this record`] }] };
+  if (checklist.every(isIn)) next.completedAt = checklist.reduce((m, c) => (c.ok && c.at > m ? c.at : m), ''); else delete next.completedAt;
+  await saveItem(keep.id, next, by(refs));
+  for (const i of rest) { const { id: _y, _new: _m, ...d } = i; await saveItem(i.id, { ...d, mergedInto: numberOf(keep) }, by(refs), { deleted: true }); }
+  toast(`Combined into ${numberOf(keep)}.`, 'ok');
 }
 
 /* ---------- correcting a received record (Admin and SA only) ---------- */

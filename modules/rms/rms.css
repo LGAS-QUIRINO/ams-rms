@@ -140,3 +140,7 @@ details.acc[open] > summary:before{content:"▾"}
 /* Account picker: about 5 accounts shown, then scroll or search – 19 Oct 2026 */
 .rcv-items.acct-pick{max-height:158px; overflow-y:auto; padding-right:6px; gap:6px}
 .rcv-items.acct-pick label{min-height:24px}
+
+/* Same period already received – 19 Oct 2026 */
+.rcv-exist{border:1px solid #9fc0ff; background:#eef4ff; border-radius:10px; padding:10px 12px; font-size:13px; line-height:1.5}
+.rcv-exist[hidden]{display:none}

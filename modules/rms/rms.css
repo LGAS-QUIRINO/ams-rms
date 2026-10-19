@@ -144,3 +144,4 @@ details.acc[open] > summary:before{content:"▾"}
 /* Same period already received – 19 Oct 2026 */
 .rcv-exist{border:1px solid #9fc0ff; background:#eef4ff; border-radius:10px; padding:10px 12px; font-size:13px; line-height:1.5}
 .rcv-exist[hidden]{display:none}
+#tx-list .t-row[hidden], #tx-none[hidden]{display:none}

@@ -270,7 +270,8 @@ export function receivingHtml(refs, rms, q) {
   const inGroup = (i) => g === 'all' || groupOfItem(rms, i) === (g === 'none' ? '' : g);
   const mine = rms.items.filter((i) => (offIds.has(i.officeId) || (!i.officeId && (teams.includes(i.teamId) || hasRole(refs, 'admin', 'sa', 'osa')))) && (!jo || i.receivedBy === by(refs)));
   // Most recently entered first (an earlier submission encoded today shows at the top).
-  const recent = mine.filter(inGroup).sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt))).slice(0, 30);
+  // Every transmittal (newest entered first); the list shows 50 at a time and the search looks through all of them.
+  const recent = mine.filter(inGroup).sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt)));
   const verify = canDecide(refs) ? rms.items.filter((i) => offIds.has(i.officeId) && isVerify(i) && inGroup(i)) : [];
   // Periods still incomplete over all their transmittals (one row per office, report and period).
   const seen = new Set(), lacking = [];
@@ -305,14 +306,26 @@ export function receivingHtml(refs, rms, q) {
       ${lacking.map(({ k, i, agg }) => `<div class="t-row" style="${cols}"><span class="mono">${agg.recs.map((r) => `<b>${esc(numberOf(r))}</b>`).join('<br>')}</span>
         <span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span><span><small>${esc(fmtDate(i.receivedAt))}</small></span><span><small>${doneTxt(agg)}</small></span>
         <span class="acts"><button class="btn sm primary" data-next="${esc(k)}">Receive Next Transmittal</button></span></div>`).join('')}</section>` : ''}
-    <section class="panel"><div class="panel-head"><h2>${jo ? 'Received by You' : 'Recently Received'}</h2></div>
+    <section class="panel" id="all-tx"><div class="panel-head"><h2>${jo ? 'Received by You' : 'All Transmittals'} · ${recent.length}</h2>
+        ${recent.length ? `<span class="r"><label class="sr-only" for="rcv-find">Search transmittals</label><input class="input" id="rcv-find" placeholder="Search: tracking no., office, report, month, name" style="width:340px"></span>` : ''}</div>
       ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Item</span><span>Received</span><span>Status</span><span></span></div>
-        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${canCorrect(refs) && !i._new ? `<button class="btn sm" data-fix="${i.id}">Correct</button>` : ''}`)).join('')}`
+        <div id="tx-list">${recent.map((i, n) => { const r0 = rms.reports.find((x) => x.id === i.reportId);
+          const find = [numberOf(i), off(i.officeId)?.label, i.fromOutside, i.reportCode, r0 && r0.name, i.period && periodLabel(i.period), i.subject, i.submittedBy, i.receivedByName, fmtDate(i.receivedAt), statusText(i)].filter(Boolean).join(' ').toLowerCase();
+          return row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${canCorrect(refs) && !i._new ? `<button class="btn sm" data-fix="${i.id}">Correct</button>` : ''}`)
+            .replace('<div class="t-row"', `<div class="t-row${n >= 50 ? ' more' : ''}" data-find="${esc(find)}"${n >= 50 ? ' hidden' : ''}`); }).join('')}</div>
+        <p class="empty" id="tx-none" hidden>No transmittal matches the search.</p>
+        ${recent.length > 50 ? `<div class="note"><button class="btn sm" id="tx-more">Show all ${recent.length}</button></div>` : ''}`
         : `<div class="empty"><b>${g === 'all' ? 'Nothing received yet' : 'Nothing received in this group'}</b>${g === 'all' ? 'Use + Receive Documents to record the first submission.' : 'Choose All groups to see everything.'}</div>`}</section>`;
 }
 
 export function wireReceiving(refs, rms, q, rerender) {
   $('#rcv-new').onclick = () => receiveForm(refs, rms);
+  // Search through every transmittal (number, office, report, month, names, date, status).
+  const f = $('#rcv-find'), more = $('#tx-more');
+  if (f) f.oninput = () => { const v = f.value.trim().toLowerCase(); let n = 0;
+    $$('#tx-list .t-row').forEach((r) => { const hit = v ? v.split(/\s+/).every((w) => r.dataset.find.includes(w)) : !r.classList.contains('more'); r.hidden = !hit; if (hit) n++; });
+    $('#tx-none').hidden = n > 0; if (more) more.parentElement.hidden = !!v; };
+  if (more) more.onclick = () => { $$('#tx-list .t-row.more').forEach((r) => { r.classList.remove('more'); r.hidden = false; }); more.parentElement.remove(); };
   const gs = $('#rcv-g'); if (gs) gs.onchange = () => { location.hash = '#/rms/receiving' + (gs.value === 'all' ? '' : '?g=' + encodeURIComponent(gs.value)); };
   $$('[data-decide]').forEach((b) => { b.onclick = () => decide(refs, rms, b.dataset.decide); });
   $$('[data-next]').forEach((b) => { const [officeId, reportId, period] = b.dataset.next.split('|'); b.onclick = () => receiveForm(refs, rms, { officeId, reportId, period }); });
@@ -634,7 +647,7 @@ async function receiveForm(refs, rms, preset = null) {
     body: `<div class="rcv-done ${confirmed ? '' : 'pend'}"><small>${confirmed ? 'TRACKING NUMBER' : 'NUMBER NOT YET CONFIRMED'}</small><b>${esc(numberOf(saved))}</b></div>
       <p>Status: ${statusPill(saved)}</p>
       ${confirmed ? `<p>Write this number on the RECEIVED stamp, then print the slip for the submitter.${isVerify(saved) ? ' An auditor will accept or reject it.' : ''}</p>`
-        : `<p>No connection to the AMS database right now. It is saved on this computer and will be sent automatically; the number may still change when it is sent. Print the slip (Recently Received → Slip) once the number is confirmed.</p>`}`,
+        : `<p>No connection to the AMS database right now. It is saved on this computer and will be sent automatically; the number may still change when it is sent. Print the slip (All Transmittals → Slip) once the number is confirmed.</p>`}`,
     buttons: [{ label: 'Done', value: null }, { label: 'Receive Another', value: 'again' }, ...(confirmed ? [{ label: 'Print Slip', cls: 'primary', value: 'slip' }] : [])]
   });
   if (again === 'slip') printSlip(refs, rms, saved);

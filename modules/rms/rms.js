@@ -435,12 +435,13 @@ function viewReport(rms, id) {
   const r = rms.reports.find((x) => x.id === id);
   modal({ title: `${r.code} · ${r.name}`, body: `<p><b>Schedule:</b> ${esc(r.frequency)} · ${esc(dueText(r))}</p><p><b>Group:</b> ${esc(groupName(rms, r) || 'No group')}${r.bulk ? ' · Bulk (always For Verification)' : ''}</p>${r.basis ? `<p><b>Legal basis:</b> ${esc(r.basis)}</p>` : ''}
     ${r.perOffice ? `<p><b>Checklist:</b> each office has its own list (one line per ${esc((r.lineLabel || 'line').toLowerCase())}), set in Office Setup; each ${esc((r.lineLabel || 'line').toLowerCase())} has the checklist below.</p>` : ''}
-    <div><span class="legend">${r.perOffice ? 'Checklist for each ' + esc((r.lineLabel || 'line').toLowerCase()) : 'Checklist'}</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}</li>`).join('')}</ol></div>` });
+    <div><span class="legend">${r.perOffice ? 'Checklist for each ' + esc((r.lineLabel || 'line').toLowerCase()) : 'Checklist'}</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}${(r.optional || []).includes(c) ? ' <small>(optional – N/A allowed)</small>' : ''}</li>`).join('')}</ol></div>` });
 }
 
 async function editReport(refs, rms, id) {
   const r = id ? rms.reports.find((x) => x.id === id) : { code: '', name: '', basis: '', frequency: 'Monthly', due: { kind: 'after', days: 10 }, checklist: [], active: true };
   const items = [...(r.checklist || [])];
+  const optional = new Set(r.optional || []);   // parts that may be N/A (e.g. BRS: only the BRS, ledger and bank statement are required)
   const usedBy = id ? rms.offices.filter((o) => (o.reportIds || []).includes(id)).length : 0;
   let out = null;
   const res = await modal({
@@ -468,18 +469,21 @@ async function editReport(refs, rms, id) {
         ${usedBy ? `<span class="hint">Ticked for ${usedBy} office${usedBy > 1 ? 's' : ''}. A changed code applies to tracking numbers made from now on.</span>` : ''}</div>` : ''}`,
     onOpen: (bg) => {
       const draw = () => {
+        const per = $('#r-per', bg) && $('#r-per', bg).checked;
         $('#r-items', bg).innerHTML = items.map((t, i) => `<div><span class="n">${i + 1}.</span><span class="txt">${esc(t)}</span>
+            ${per ? `<button type="button" class="req-tog ${optional.has(t) ? 'opt' : ''}" data-opt="${i}" title="Click to switch">${optional.has(t) ? 'Optional (N/A allowed)' : 'Required'}</button>` : ''}
             <button type="button" class="mini" data-up="${i}" ${i ? '' : 'disabled'} aria-label="Move up">↑</button>
             <button type="button" class="mini" data-rm="${i}" aria-label="Remove">×</button></div>`).join('')
           + `<div><input class="input" id="r-new" placeholder="+ Add a document to the checklist, then press Enter"></div>`;
         $$('[data-rm]', bg).forEach((b) => { b.onclick = () => { items.splice(+b.dataset.rm, 1); draw(); }; });
         $$('[data-up]', bg).forEach((b) => { b.onclick = () => { const i = +b.dataset.up; [items[i - 1], items[i]] = [items[i], items[i - 1]]; draw(); }; });
+        $$('[data-opt]', bg).forEach((b) => { b.onclick = () => { const t = items[+b.dataset.opt]; if (optional.has(t)) optional.delete(t); else optional.add(t); draw(); }; });
         const nw = $('#r-new', bg);
         nw.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = nw.value.trim(); if (v) { items.push(v); draw(); $('#r-new', bg).focus(); } } };
       };
       const perState = () => { const on = $('#r-per', bg).checked; $('#r-per-box', bg).hidden = !on;
         $('#r-items-legend', bg).textContent = on ? 'Checklist for each line (e.g. BRS signed, bank statement, list of outstanding checks). Leave empty to tick each line as a whole.' : 'Checklist (documents that make up this report)'; };
-      $('#r-per', bg).onchange = perState; perState();
+      $('#r-per', bg).onchange = () => { perState(); draw(); }; perState();
       const dueState = () => { const k = $('#r-due', bg).value; $('.rms-due-n', bg).hidden = k === 'none'; $('#r-due-unit', bg).textContent = k === 'after' ? 'days after the period ends' : 'day of the following period'; };
       $('#r-due', bg).onchange = dueState; draw(); dueState();
     },
@@ -495,7 +499,7 @@ async function editReport(refs, rms, id) {
       if (kind !== 'none' && !(n >= 1 && n <= 31)) { toast('Enter the number of days (1 to 31).', 'bad'); return false; }
       out = { code, name, basis: $('#r-basis', bg).value.trim(), frequency: $('#r-freq', bg).value,
         due: kind === 'none' ? { kind } : kind === 'after' ? { kind, days: n } : { kind, day: n }, checklist: items, active: id ? $('#r-active', bg).value === 'yes' : true,
-        groupId: $('#r-group', bg).value, bulk: $('#r-bulk', bg).checked, perOffice: per, ...(per ? { lineLabel } : {}) };
+        groupId: $('#r-group', bg).value, bulk: $('#r-bulk', bg).checked, perOffice: per, ...(per ? { lineLabel, optional: items.filter((t) => optional.has(t)) } : {}) };
       return true;
     } }]
   });

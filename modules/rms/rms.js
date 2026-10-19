@@ -4,7 +4,7 @@ import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { roleLine } from '../../js/views/admin.js';
 import { moduleFrame } from '../../js/frame.js';
-import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml, checklistHtml, itemsFor, isGrouped, lineTally } from './receiving.js';
+import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml, checklistHtml, itemsFor, isGrouped, lineTally, unpackItem } from './receiving.js';
 
 // Load this module's look once.
 if (!document.querySelector('link[data-rms]')) {
@@ -49,7 +49,7 @@ async function loadRms() {
   const now = new Date();
   return { reports: reports.map((r) => ({ id: r.id, ...r.data })), offices: offices.map((o) => ({ id: o.id, ...o.data })),
     // _new: received on this computer but not yet sent to the AMS database (its number is not yet confirmed).
-    items: items.map((i) => ({ id: i.id, ...i.data, ...(i.pending && !i.version ? { _new: true } : {}) })),
+    items: items.map((i) => ({ id: i.id, ...unpackItem(i.data), ...(i.pending && !i.version ? { _new: true } : {}) })),
     // Report groups made by the team (Report Library), in their set order.
     groups: (groups && groups.data && groups.data.list) || [],
     startPeriod: (settings && settings.data && settings.data.startPeriod) || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` };

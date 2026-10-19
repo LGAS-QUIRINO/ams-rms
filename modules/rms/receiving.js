@@ -14,6 +14,17 @@ const by = (refs) => refs.me?.data.email || '';
 const myName = (refs) => refs.me?.data.name || '';
 // A document counts as in when submitted, or marked N/A (optional parts only, e.g. BRS parts that do not apply).
 export const isIn = (c) => !!(c.ok || c.na);
+// Stored compactly: for per-account entries the name ("account · part") is not repeated; it is rebuilt when loaded.
+// (Large BRS records otherwise pass the 50,000-character limit of a Google Sheets cell.)
+export function packItem(d) {
+  if (!d || !isGrouped(d.checklist)) return d;
+  return { ...d, checklist: d.checklist.map((c) => { if (!(c.line && c.part)) return c; const { item: _i, by: _b, ...rest } = c; return rest; }) };
+}
+export function unpackItem(d) {
+  if (!d || !Array.isArray(d.checklist)) return d;
+  return { ...d, checklist: d.checklist.map((c) => (c.item || !(c.line && c.part) ? c : { ...c, item: `${c.line} · ${c.part}` })) };
+}
+const saveItem = (id, data, who) => store.save('rms_items', id, packItem(data), who);
 const missing = (i) => (i.checklist || []).filter((c) => !isIn(c));
 
 // Auditors who accept or reject: ATL, Team Members, SA and Admin (not JO or OSA Staff).
@@ -472,7 +483,7 @@ async function receiveForm(refs, rms) {
   });
   if (res !== 'save') return;
   const id = newId('rcv');
-  await store.save('rms_items', id, out, by(refs));
+  await saveItem(id, out, by(refs));
   let saved = { id, ...out }, confirmed = DEMO;
   // Connected: the AMS database gives the tracking number, so two people receiving at once never share a number.
   if (!DEMO && navigator.onLine) {
@@ -481,7 +492,7 @@ async function receiveForm(refs, rms) {
       const problems = await syncNow();
       const rec = await store.get('rms_items', id);
       if (!rec) { toast('Not saved: ' + (problems[0] || 'the database refused it.'), 'bad'); return; }
-      if (!rec.pending) { saved = { id, ...rec.data }; confirmed = true; }
+      if (!rec.pending) { saved = { id, ...unpackItem(rec.data) }; confirmed = true; }
     }
   }
   const again = await modal({
@@ -520,10 +531,10 @@ async function decide(refs, rms, id) {
   if (out.action === 'accept') {
     // Older records received before this rule may still need their tracking number.
     const t = data.trackingNo ? {} : trackingNo(rms, { id: i.officeId, code: i.officeCode }, i.reportCode, +i.period.slice(0, 4));
-    await store.save('rms_items', id, { ...data, ...t, status: 'accepted', decision }, by(refs));
+    await saveItem(id, { ...data, ...t, status: 'accepted', decision }, by(refs));
     toast(`Accepted · ${t.trackingNo || data.trackingNo}.`, 'ok');
   } else {
-    await store.save('rms_items', id, { ...data, status: 'rejected', decision }, by(refs));
+    await saveItem(id, { ...data, status: 'rejected', decision }, by(refs));
     toast('Rejected and recorded. The period still counts as not submitted.', 'ok');
   }
 }
@@ -576,7 +587,7 @@ async function addLate(refs, rms, id) {
   const { id: _x, _new: _n, ...data } = i;
   // The status (For Verification / Accepted) stays; the history shows this as the next submission.
   const lastIn = checklist.reduce((m, c) => (c.at > m ? c.at : m), '');
-  await store.save('rms_items', id, { ...data, checklist, ...(done ? { completedAt: lastIn } : {}) }, by(refs));
+  await saveItem(id, { ...data, checklist, ...(done ? { completedAt: lastIn } : {}) }, by(refs));
   toast(done ? 'Saved. All documents are now submitted.' : 'Saved. Still missing some documents.', 'ok');
 }
 
@@ -687,7 +698,7 @@ async function correctItem(refs, rms, id) {
   const corrections = [...(i.corrections || []), { at: new Date().toISOString(), by: by(refs), byName: myName(refs), reason: out.why, changes: out.changes }];
   const next = { ...data, ...out.patch, corrections };
   if (!next.completedAt) delete next.completedAt;
-  await store.save('rms_items', id, next, by(refs));
+  await saveItem(id, next, by(refs));
   toast('Correction saved and recorded in the history.', 'ok');
 }
 

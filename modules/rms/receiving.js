@@ -54,6 +54,18 @@ export function itemsFor(r, o) {
   return [...base, ...(o && o.note ? [o.note] : [])];
 }
 const LONG = 12;
+// Date and time for an <input type="datetime-local">, in this computer's time.
+const localInput = (d) => { const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 16); };
+// Reading the date field: an ISO date, or an error message.
+function readWhen(v, now = new Date()) {
+  const d = new Date(v);
+  if (!v || isNaN(d)) return { err: 'Enter the date received.' };
+  if (d - now > 5 * 60000) return { err: 'The date received cannot be in the future.' };
+  return { iso: d.toISOString() };
+}
+// Encoded more than an hour after it was received (e.g. an earlier submission entered now).
+const laterNote = (rec, enc, byName) => rec && enc && new Date(enc) - new Date(rec) > 3600000 ? `encoded ${fmtDate(enc)}${byName ? ' by ' + byName : ''}` : '';
+export const encodedLater = (i) => !!laterNote(i.receivedAt, i.encodedAt);
 // Checklist for screens: every line when short; for long lists (e.g. 75 bank accounts) the count and only what is missing.
 export function checklistHtml(i) {
   const ck = i.checklist || [], m = ck.filter((c) => !c.ok);
@@ -72,15 +84,17 @@ const ordinal = (n) => ORD[n - 1] || n + 'th';
 export function historyOf(i) {
   const ck = i.checklist || [], total = ck.length;
   const ev = [];
-  if (i.kind === 'comm') return [{ at: i.receivedAt, text: 'Received', who: i.receivedByName }];
+  if (i.kind === 'comm') { const n = laterNote(i.receivedAt, i.encodedAt, i.receivedByName); return [{ at: i.receivedAt, text: 'Received' + (n ? ' (' + n + ')' : ''), who: n ? '' : i.receivedByName }]; }
   let have = ck.filter((c) => c.ok && !c.late).length;
-  ev.push({ at: i.receivedAt, who: i.receivedByName, text: `1st submission · ${have} of ${total} document${total === 1 ? '' : 's'} submitted${have === total ? ' · all submitted' : ''}` });
+  const n1 = laterNote(i.receivedAt, i.encodedAt, i.receivedByName);
+  ev.push({ at: i.receivedAt, who: n1 ? '' : i.receivedByName, text: `1st submission · ${have} of ${total} document${total === 1 ? '' : 's'} submitted${have === total ? ' · all submitted' : ''}${n1 ? ' (' + n1 + ')' : ''}` });
   const late = {};
   ck.filter((c) => c.ok && c.late).forEach((c) => { (late[c.at] = late[c.at] || []).push(c); });
   Object.keys(late).sort().forEach((at, k) => {
     const got = late[at]; have += got.length;
     const names = got.length > 5 ? got.slice(0, 5).map((c) => c.item).join('; ') + `; and ${got.length - 5} more` : got.map((c) => c.item).join('; ');
-    ev.push({ at, who: got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}` });
+    const nl = laterNote(at, got[0].encodedAt, got[0].byName);
+    ev.push({ at, who: nl ? '' : got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}${nl ? ' (' + nl + ')' : ''}` });
   });
   if (i.decision) ev.push({ at: i.decision.at, who: i.decision.byName, decision: true,
     text: (i.decision.action === 'accept' ? 'Accepted' : 'Rejected') + (i.decision.remarks ? ' · ' + i.decision.remarks : '') });
@@ -103,7 +117,8 @@ export function receivingHtml(refs, rms, q) {
   const g = q.get('g') || 'all';
   const inGroup = (i) => g === 'all' || groupOfItem(rms, i) === (g === 'none' ? '' : g);
   const mine = rms.items.filter((i) => (offIds.has(i.officeId) || (!i.officeId && (teams.includes(i.teamId) || hasRole(refs, 'admin', 'sa', 'osa')))) && (!jo || i.receivedBy === by(refs)));
-  const recent = mine.filter(inGroup).sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 30);
+  // Most recently entered first (an earlier submission encoded today shows at the top).
+  const recent = mine.filter(inGroup).sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt))).slice(0, 30);
   const verify = canDecide(refs) ? rms.items.filter((i) => offIds.has(i.officeId) && isVerify(i) && inGroup(i)) : [];
   const lacking = rms.items.filter((i) => offIds.has(i.officeId) && lacksDocs(i) && !isVerify(i) && inGroup(i));
   const off = (id) => offs.find((o) => o.id === id);
@@ -112,7 +127,7 @@ export function receivingHtml(refs, rms, q) {
   const cols = 'grid-template-columns:minmax(190px,1.2fr) minmax(170px,1fr) 120px 220px 170px';
   const row = (i, acts) => `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b>${i._new ? '<br><small class="warn-t">not yet confirmed</small>' : ''}</span>
     <span>${esc(i.kind === 'comm' && !i.officeId ? i.fromOutside : off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
-    <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span>${statusPill(i)}</span><span class="acts">${acts}</span></div>`;
+    <span><small>${esc(fmtDate(i.receivedAt))}${encodedLater(i) ? '<br><i>encoded later</i>' : '<br>' + esc(new Date(i.receivedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }))}</small></span><span>${statusPill(i)}</span><span class="acts">${acts}</span></div>`;
   const groups = rms.groups || [];
   const gOpt = (v, t) => `<option value="${esc(v)}" ${g === v ? 'selected' : ''}>${esc(t)}</option>`;
   return `<div class="hello"><div><h1>Receiving</h1><p>Record what the offices submit. Every receipt gets its tracking number right away. Reports received by the JO are For Verification until an auditor accepts or rejects them.</p></div>
@@ -176,8 +191,10 @@ async function receiveForm(refs, rms) {
       </div>
       <div class="two"><div class="field"><label for="f-by">Received From (name)</label><input class="input" id="f-by" list="f-by-list" placeholder="e.g. Juan P. Reyes"><datalist id="f-by-list"></datalist></div>
         <div class="field"><label for="f-des">Designation</label><input class="input" id="f-des" placeholder="e.g. Barangay Treasurer"></div></div>
-      <div class="field"><label for="f-rem">Remarks (optional)</label><input class="input" id="f-rem"></div>
-      <p class="hint">Received by <b>${esc(myName(refs))}</b> · ${esc(fmtDT(now))} (recorded automatically)</p>`,
+      <div class="two"><div class="field"><label for="f-date">Date received</label><input class="input" type="datetime-local" id="f-date" value="${localInput(now)}" max="${localInput(now)}">
+          <span class="hint">Now, unless you are encoding an earlier submission: then use the date on the RECEIVED stamp.</span></div>
+        <div class="field"><label for="f-rem">Remarks (optional)</label><input class="input" id="f-rem"></div></div>
+      <p class="hint">Encoded by <b>${esc(myName(refs))}</b> · ${esc(fmtDT(now))} (recorded automatically)</p>`,
     onOpen: (bg) => {
       const kind = () => $('input[name=kind]:checked', bg).value;
       const officesOf = (mid) => offs.filter((o) => o.munId === mid);
@@ -230,7 +247,8 @@ async function receiveForm(refs, rms) {
         dueHint(); state(); decState();
       };
       const dueHint = () => { const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value); const p = $('#f-per', bg).value; const d = r && p ? dueDate(r, p) : null;
-        $('#f-due', bg).textContent = d ? `Due ${fmtDate(d)}${now > d ? ' · this is late' : ''}` : ''; };
+        const when = new Date($('#f-date', bg).value || now);
+        $('#f-due', bg).textContent = d ? `Due ${fmtDate(d)}${when > d ? ' · received late' : ' · on time'}` : ''; };
       const state = () => {
         const all = $$('input[name=ck]', bg), ticked = all.filter((x) => x.checked).length;
         $('#f-state', bg).innerHTML = !all.length ? '' : ticked === all.length ? `<b class="ok-t">All ${all.length} submitted</b>`
@@ -257,7 +275,7 @@ async function receiveForm(refs, rms) {
       const ready = scopes.find((s) => s.id === last) || scopes.find((s) => offs.some((o) => o.munId === s.id && o.code));
       if (ready) $('#f-mun', bg).value = ready.id;
       $('#f-mun', bg).onchange = () => { try { localStorage.setItem('rms-last-mun', $('#f-mun', bg).value); } catch (e) { /* ignore */ } fillOffices(); };
-      $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = dueHint;
+      $('#f-off', bg).onchange = fillReports; $('#f-rep', bg).onchange = fillPeriods; $('#f-per', bg).onchange = dueHint; $('#f-date', bg).onchange = dueHint;
       // Picking a usual submitter fills in the designation right away (not on leaving the field).
       $('#f-by', bg).oninput = () => { const opt = [...$('#f-by-list', bg).options].find((x) => x.value === $('#f-by', bg).value); if (opt && !$('#f-des', bg).value) $('#f-des', bg).value = opt.textContent; };
       // Upload PDF to fill in (reports and communications). Scanned PDFs are read only when the receiver asks.
@@ -306,7 +324,10 @@ async function receiveForm(refs, rms) {
       if (!outside && (!o || !o.code)) { toast('Choose a submitting office that has an office code.', 'bad'); return false; }
       const submittedBy = $('#f-by', bg).value.trim(), designation = $('#f-des', bg).value.trim();
       if (!submittedBy) { toast('Enter the name in Received From.', 'bad'); return false; }
-      const base = { kind, receivedAt: new Date().toISOString(), receivedBy: by(refs), receivedByName: myName(refs), submittedBy, submittedDesignation: designation,
+      const when = readWhen($('#f-date', bg).value);
+      if (when.err) { toast(when.err, 'bad'); return false; }
+      const encodedAt = new Date().toISOString();
+      const base = { kind, receivedAt: when.iso, encodedAt, receivedBy: by(refs), receivedByName: myName(refs), submittedBy, submittedDesignation: designation,
         remarks: $('#f-rem', bg).value.trim(), officeId: o ? o.id : '', officeCode: o ? o.code : '', teamId: o ? o.teamId : (refs.me?.data.teamIds || [])[0] || '', munId: o ? o.munId : '' };
       if (kind === 'report') {
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
@@ -325,7 +346,7 @@ async function receiveForm(refs, rms) {
         if (choice === 'reject' && !dRem) { toast('Enter the reason for rejecting it.', 'bad'); return false; }
         out = { ...base, reportId: r.id, reportCode: r.code, period, checklist, ...trackingNo(rms, o, r.code, yr), ...(allIn ? { completedAt: at } : {}),
           status: choice === 'accept' ? 'accepted' : choice === 'reject' ? 'rejected' : 'verify',
-          ...(choice === 'verify' ? {} : { decision: { action: choice, remarks: dRem, by: by(refs), byName: myName(refs), at } }) };
+          ...(choice === 'verify' ? {} : { decision: { action: choice, remarks: dRem, by: by(refs), byName: myName(refs), at: encodedAt } }) };
       } else {
         const subject = $('#f-subj', bg).value.trim();
         if (!subject) { toast('Enter the subject or a short description.', 'bad'); return false; }
@@ -334,7 +355,7 @@ async function receiveForm(refs, rms) {
         // Outside senders have no office code: their series uses OUT (e.g. OUT-2026-0004).
         const pseudo = o || { id: 'outside', code: 'OUT' };
         out = { ...base, officeId: o ? o.id : '', fromOutside, subject, pages: $('#f-pages', bg).value.trim(), status: 'received',
-          ...trackingNo(rms, pseudo, '', new Date().getFullYear()) };
+          ...trackingNo(rms, pseudo, '', new Date(when.iso).getFullYear()) };
       }
       return true;
     } }]
@@ -400,12 +421,14 @@ async function decide(refs, rms, id) {
 /* ---------- late documents ---------- */
 async function addLate(refs, rms, id) {
   const i = rms.items.find((x) => x.id === id);
-  let picked = null;
+  let picked = null, when = null;
   const res = await modal({
     title: 'Add Late Documents · ' + numberOf(i),
     // Long lists (e.g. 75 bank accounts): only the missing ones, with a search box.
     body: (() => { const many = i.checklist.length > LONG, miss = i.checklist.map((c, k) => ({ c, k })).filter((x) => !x.c.ok);
-      return `<p>Tick the missing documents received now. Today's date is recorded for each.</p>
+      return `<p>Tick the missing documents that came in.</p>
+      <div class="field" style="max-width:300px"><label for="l-date">Date received</label><input class="input" type="datetime-local" id="l-date" value="${localInput(new Date())}" max="${localInput(new Date())}">
+        <span class="hint">Now, or the date on the RECEIVED stamp when encoding later.</span></div>
       ${many ? `<p><b>${i.checklist.length - miss.length} of ${i.checklist.length} already submitted.</b> Missing: ${miss.length}</p><input class="input" id="l-find" placeholder="Search the missing ones">` : ''}
       <div class="rcv-list"><div class="rcv-items${many ? ' long' : ''}">${many ? miss.map(({ c, k }) => `<label data-t="${esc(c.item.toLowerCase())}"><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')
         : i.checklist.map((c, k) => c.ok ? `<label class="done">✓ ${esc(c.item)} <small>received ${esc(fmtDate(c.at))}</small></label>` : `<label><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')}</div>
@@ -416,15 +439,20 @@ async function addLate(refs, rms, id) {
     },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save', cls: 'primary', value: 'save', check: (bg) => {
       picked = $$('input[name=late]:checked', bg).map((x) => +x.value);
-      if (!picked.length) { toast('Tick the documents received.', 'bad'); return false; } return true; } }]
+      if (!picked.length) { toast('Tick the documents received.', 'bad'); return false; }
+      when = readWhen($('#l-date', bg).value);
+      if (when.err) { toast(when.err, 'bad'); return false; }
+      if (when.iso < i.receivedAt) { toast('The date cannot be before the first submission (' + fmtDate(i.receivedAt) + ').', 'bad'); return false; }
+      return true; } }]
   });
   if (res !== 'save') return;
-  const at = new Date().toISOString();
-  const checklist = i.checklist.map((c, k) => picked.includes(k) ? { ...c, ok: true, at, late: true, by: by(refs), byName: myName(refs) } : c);
+  const at = when.iso, encodedAt = new Date().toISOString();
+  const checklist = i.checklist.map((c, k) => picked.includes(k) ? { ...c, ok: true, at, encodedAt, late: true, by: by(refs), byName: myName(refs) } : c);
   const done = checklist.every((c) => c.ok);
   const { id: _x, _new: _n, ...data } = i;
   // The status (For Verification / Accepted) stays; the history shows this as the next submission.
-  await store.save('rms_items', id, { ...data, checklist, ...(done ? { completedAt: at } : {}) }, by(refs));
+  const lastIn = checklist.reduce((m, c) => (c.at > m ? c.at : m), '');
+  await store.save('rms_items', id, { ...data, checklist, ...(done ? { completedAt: lastIn } : {}) }, by(refs));
   toast(done ? 'Saved. All documents are now submitted.' : 'Saved. Still missing some documents.', 'ok');
 }
 
@@ -435,7 +463,8 @@ function viewItem(refs, rms, id) {
   const row = (k, v) => `<div class="kvrow"><small>${k}</small><span>${v}</span></div>`;
   modal({ title: numberOf(i), body: `${row('Status', statusPill(i))}${row('Office', esc(i.fromOutside || off?.label || ''))}
     ${i.kind === 'comm' ? row('Subject', esc(i.subject)) + (i.pages ? row('Pages', esc(i.pages)) : '') : row('Report', esc(i.reportCode + ' · ' + periodLabel(i.period)))}
-    ${row('Received', esc(fmtDT(i.receivedAt)) + ' by ' + esc(i.receivedByName))}
+    ${row('Received', esc(fmtDate(i.receivedAt) + ', ' + new Date(i.receivedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })) + ' by ' + esc(i.receivedByName)
+      + (encodedLater(i) ? `<br><small>Encoded later: ${esc(fmtDT(i.encodedAt))}</small>` : ''))}
     ${row('Received from', esc(i.submittedBy) + (i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''))}
     ${i.pendingCode && i.trackingNo ? row('Pending code', `<span class="mono">${esc(i.pendingCode)}</span>`) : ''}
     ${i.checklist ? row('Checklist', checklistHtml(i)) : ''}

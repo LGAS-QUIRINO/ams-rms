@@ -208,12 +208,12 @@ function overviewHtml(refs, rms, overdue) {
   const offIds = new Set(offs.map((o) => o.id));
   const now = new Date(), ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const mine = rms.items.filter((i) => offIds.has(i.officeId));
-  const thisMonth = mine.filter((i) => String(i.receivedAt).slice(0, 7) === ym).length;
+  const thisMonth = mine.filter((i) => String(i.encodedAt || i.receivedAt).slice(0, 7) === ym).length;
   const verify = mine.filter(isVerify);
   const lacking = mine.filter((i) => lacksDocs(i) && !isVerify(i));
   const incomplete = [...verify, ...lacking];
   const teamNames = [...new Set(myTeams(refs).map((t) => refs.team[t]?.data.name).filter(Boolean))].join(', ');
-  const recent = [...mine].sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 8);
+  const recent = [...mine].sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt))).slice(0, 8);
   const rep = (id) => rms.reports.find((r) => r.id === id);
   const office = (id) => offs.find((o) => o.id === id);
   // Overdue grouped by report and period.
@@ -234,7 +234,7 @@ function overviewHtml(refs, rms, overdue) {
       <section class="panel">
         <div class="panel-head"><h2>Recently Received</h2></div>
         ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Report</span><span>Received</span><span>Status</span></div>
-          ${recent.map((i) => `<div class="t-row" style="${cols}"><span class="mono">${esc(numberOf(i))}</span><span>${esc(i.fromOutside || office(i.officeId)?.label || '')}<br><small>${i.reportId ? esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period)) : 'Communication · ' + esc(i.subject || '')}</small></span><span><small>${esc(fmtDT(i.receivedAt))}</small></span><span>${statusPill(i)}</span></div>`).join('')}`
+          ${recent.map((i) => `<div class="t-row" style="${cols}"><span class="mono">${esc(numberOf(i))}</span><span>${esc(i.fromOutside || office(i.officeId)?.label || '')}<br><small>${i.reportId ? esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period)) : 'Communication · ' + esc(i.subject || '')}</small></span><span><small>${esc(fmtDate(i.receivedAt))}</small></span><span>${statusPill(i)}</span></div>`).join('')}`
           : '<div class="empty"><b>Nothing received yet</b>Items appear here once Receiving is in use.</div>'}
       </section>
       <section class="panel">
@@ -336,7 +336,7 @@ function wireMonitor(refs, rms, q) {
     const it = st.item;
     box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], STATUS_PILL[st.s] || '')}</span></div>
       ${row('Due', st.due ? esc(fmtDate(st.due)) : 'No set due date')}
-      ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDT(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · received from ' + esc(it.submittedBy) : ''}`)
+      ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDate(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · received from ' + esc(it.submittedBy) : ''}`)
         + row('Checklist', it.checklist ? checklistHtml(it) : '—')
         + row('History', historyHtml(it))
         : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}

@@ -16,6 +16,8 @@ const missing = (i) => (i.checklist || []).filter((c) => !c.ok);
 
 // Auditors who accept or reject: ATL, Team Members, SA and Admin (not JO or OSA Staff).
 export const canDecide = (refs) => hasRole(refs, 'atl', 'member', 'sa', 'admin');
+// Who may correct a received record (wrong ticks, date, period, names): Admin and SA only.
+export const canCorrect = (refs) => hasRole(refs, 'admin', 'sa');
 // Status helpers. Older records may still say 'pending' (= For Verification) or 'complete' (= accepted).
 export const isVerify = (i) => i.kind !== 'comm' && (i.status === 'verify' || i.status === 'pending');
 export const isAccepted = (i) => i.status === 'accepted' || i.status === 'complete';
@@ -96,6 +98,7 @@ export function historyOf(i) {
     const nl = laterNote(at, got[0].encodedAt, got[0].byName);
     ev.push({ at, who: nl ? '' : got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}${nl ? ' (' + nl + ')' : ''}` });
   });
+  (i.corrections || []).forEach((c) => ev.push({ at: c.at, who: c.byName, decision: true, text: `Corrected · ${c.reason}${c.changes && c.changes.length ? ' (' + c.changes.join('; ') + ')' : ''}` }));
   if (i.decision) ev.push({ at: i.decision.at, who: i.decision.byName, decision: true,
     text: (i.decision.action === 'accept' ? 'Accepted' : 'Rejected') + (i.decision.remarks ? ' · ' + i.decision.remarks : '') });
   return ev.sort((a, b) => String(a.at).localeCompare(String(b.at)));
@@ -142,7 +145,7 @@ export function receivingHtml(refs, rms, q) {
       ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
     <section class="panel"><div class="panel-head"><h2>${jo ? 'Received by You' : 'Recently Received'}</h2></div>
       ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Item</span><span>Received</span><span>Status</span><span></span></div>
-        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${lacksDocs(i) ? `<button class="btn sm" data-late="${i.id}">Late Docs</button>` : ''}`)).join('')}`
+        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${lacksDocs(i) ? `<button class="btn sm" data-late="${i.id}">Late Docs</button>` : ''}${canCorrect(refs) && !i._new ? `<button class="btn sm" data-fix="${i.id}">Correct</button>` : ''}`)).join('')}`
         : `<div class="empty"><b>${g === 'all' ? 'Nothing received yet' : 'Nothing received in this group'}</b>${g === 'all' ? 'Use + Receive Documents to record the first submission.' : 'Choose All groups to see everything.'}</div>`}</section>`;
 }
 
@@ -152,6 +155,7 @@ export function wireReceiving(refs, rms, q, rerender) {
   $$('[data-decide]').forEach((b) => { b.onclick = () => decide(refs, rms, b.dataset.decide); });
   $$('[data-late]').forEach((b) => { b.onclick = () => addLate(refs, rms, b.dataset.late); });
   $$('[data-view]').forEach((b) => { b.onclick = () => viewItem(refs, rms, b.dataset.view); });
+  $$('[data-fix]').forEach((b) => { b.onclick = () => correctItem(refs, rms, b.dataset.fix); });
   $$('[data-slip]').forEach((b) => { b.onclick = () => printSlip(refs, rms, rms.items.find((i) => i.id === b.dataset.slip)); });
   if (q.get('new') === '1') { history.replaceState(null, '', '#/rms/receiving'); receiveForm(refs, rms); }
 }
@@ -457,7 +461,7 @@ async function addLate(refs, rms, id) {
 }
 
 /* ---------- view one item ---------- */
-function viewItem(refs, rms, id) {
+async function viewItem(refs, rms, id) {
   const i = rms.items.find((x) => x.id === id);
   const off = visibleOffices(refs, rms, scopesFor(refs).map((s) => s.id)).find((o) => o.id === i.officeId);
   const row = (k, v) => `<div class="kvrow"><small>${k}</small><span>${v}</span></div>`;
@@ -469,7 +473,86 @@ function viewItem(refs, rms, id) {
     ${i.pendingCode && i.trackingNo ? row('Pending code', `<span class="mono">${esc(i.pendingCode)}</span>`) : ''}
     ${i.checklist ? row('Checklist', checklistHtml(i)) : ''}
     ${row('History', historyHtml(i))}
-    ${i.remarks ? row('Remarks', esc(i.remarks)) : ''}` });
+    ${i.remarks ? row('Remarks', esc(i.remarks)) : ''}`,
+    buttons: [{ label: 'Close', value: null, cls: canCorrect(refs) && !i._new ? '' : 'primary' }, ...(canCorrect(refs) && !i._new ? [{ label: 'Correct', cls: 'primary', value: 'fix' }] : [])] })
+    .then((v) => { if (v === 'fix') correctItem(refs, rms, id); });
+}
+
+/* ---------- correcting a received record (Admin and SA only) ---------- */
+// Fixes the encoder's mistakes: wrong ticks, date received, period, Received From, remarks. The tracking number never changes,
+// and every correction is kept in the history with who made it, when, why and what changed.
+async function correctItem(refs, rms, id) {
+  if (!canCorrect(refs)) return toast('Only the Admin and the SA can correct a received record.', 'bad');
+  const i = rms.items.find((x) => x.id === id);
+  const r = rms.reports.find((x) => x.id === i.reportId);
+  const isRep = i.kind !== 'comm';
+  const y = +String(i.period || i.receivedAt).slice(0, 4);
+  const periods = isRep && r ? [...periodsOf(r, y - 1), ...periodsOf(r, y), ...periodsOf(r, y + 1)].filter((p) => { const [py, pa] = span(p); return new Date(py, pa - 1, 1) <= new Date(); }) : [];
+  if (isRep && i.period && !periods.includes(i.period)) periods.push(i.period);
+  const ck = i.checklist || [], many = ck.length > LONG;
+  let out = null;
+  const res = await modal({
+    title: 'Correct · ' + numberOf(i), wide: true,
+    body: `<p class="hint">For mistakes in encoding. The tracking number stays the same, and this correction is kept in the history.</p>
+      <div class="two"><div class="field"><label for="c-date">Date received</label><input class="input" type="datetime-local" id="c-date" value="${localInput(i.receivedAt)}" max="${localInput(new Date())}"></div>
+        ${isRep ? `<div class="field"><label for="c-per">Period</label><select class="input" id="c-per">${periods.map((p) => `<option value="${p}" ${p === i.period ? 'selected' : ''}>${esc(periodLabel(p))}</option>`).join('')}</select></div>`
+          : `<div class="field"><label for="c-subj">Subject</label><input class="input" id="c-subj" value="${esc(i.subject || '')}"></div>`}</div>
+      ${isRep ? `<div><span class="legend">Checklist · tick what was actually submitted</span>
+        <div class="rcv-list">${many ? '<input class="input" id="c-find" placeholder="Search">' : ''}
+          <div class="rcv-items${many ? ' long' : ''}">${ck.map((c, k) => `<label data-t="${esc(c.item.toLowerCase())}"><input type="checkbox" name="cfix" value="${k}" ${c.ok ? 'checked' : ''}> ${esc(c.item)}${c.ok && c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</label>`).join('')}</div></div>
+        <span class="hint" id="c-state"></span></div>` : ''}
+      <div class="two"><div class="field"><label for="c-by">Received From (name)</label><input class="input" id="c-by" value="${esc(i.submittedBy || '')}"></div>
+        <div class="field"><label for="c-des">Designation</label><input class="input" id="c-des" value="${esc(i.submittedDesignation || '')}"></div></div>
+      <div class="field"><label for="c-rem">Remarks</label><input class="input" id="c-rem" value="${esc(i.remarks || '')}"></div>
+      <div class="field"><label for="c-why">Reason for the correction (required)</label><input class="input" id="c-why" placeholder="e.g. Encoder ticked GF-1234 by mistake; not in the bundle"></div>`,
+    onOpen: (bg) => {
+      const st = () => { const all = $$('input[name=cfix]', bg); if (!all.length) return; const t = all.filter((x) => x.checked).length; $('#c-state', bg).textContent = `${t} of ${all.length} submitted`; };
+      $$('input[name=cfix]', bg).forEach((x) => { x.onchange = st; }); st();
+      if ($('#c-find', bg)) $('#c-find', bg).oninput = () => { const v = $('#c-find', bg).value.trim().toLowerCase(); $$('.rcv-items label', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+    },
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Save Correction', cls: 'primary', value: 'save', check: (bg) => {
+      const why = $('#c-why', bg).value.trim();
+      if (!why) { toast('Enter the reason for the correction.', 'bad'); return false; }
+      const when = readWhen($('#c-date', bg).value);
+      if (when.err) { toast(when.err, 'bad'); return false; }
+      const changes = [];
+      const recAt = new Date(when.iso).getTime() === new Date(i.receivedAt).getTime() ? i.receivedAt : when.iso;
+      if (recAt !== i.receivedAt) changes.push(`date received ${fmtDate(i.receivedAt)} → ${fmtDate(recAt)}`);
+      const patch = { receivedAt: recAt };
+      if (isRep) {
+        const per = $('#c-per', bg).value; if (per !== i.period) { changes.push(`period ${periodLabel(i.period)} → ${periodLabel(per)}`); patch.period = per; }
+        const on = new Set($$('input[name=cfix]:checked', bg).map((x) => +x.value));
+        const added = [], removed = [];
+        patch.checklist = ck.map((c, k) => {
+          if (on.has(k) && !c.ok) { added.push(c.item); return { ...c, ok: true, at: recAt, late: false }; }
+          if (!on.has(k) && c.ok) { removed.push(c.item); return { item: c.item, ok: false, at: '' }; }
+          // First-submission documents follow a corrected date received.
+          return c.ok && !c.late ? { ...c, at: recAt } : c;
+        });
+        const nm = (l) => l.length > 5 ? l.slice(0, 5).join(', ') + ` and ${l.length - 5} more` : l.join(', ');
+        if (added.length) changes.push('ticked ' + nm(added));
+        if (removed.length) changes.push('unticked ' + nm(removed));
+        const done = patch.checklist.every((c) => c.ok);
+        patch.completedAt = done ? patch.checklist.reduce((m, c) => (c.at > m ? c.at : m), '') : '';
+      } else {
+        const subj = $('#c-subj', bg).value.trim(); if (!subj) { toast('Enter the subject.', 'bad'); return false; }
+        if (subj !== i.subject) { changes.push('subject'); patch.subject = subj; }
+      }
+      const sb = $('#c-by', bg).value.trim(), sd = $('#c-des', bg).value.trim(), rem = $('#c-rem', bg).value.trim();
+      if (!sb) { toast('Enter the name in Received From.', 'bad'); return false; }
+      if (sb !== (i.submittedBy || '') || sd !== (i.submittedDesignation || '')) { changes.push(`received from ${i.submittedBy || '—'} → ${sb}`); patch.submittedBy = sb; patch.submittedDesignation = sd; }
+      if (rem !== (i.remarks || '')) { changes.push('remarks'); patch.remarks = rem; }
+      if (!changes.length) { toast('Nothing was changed.', 'bad'); return false; }
+      out = { patch, changes, why }; return true;
+    } }]
+  });
+  if (res !== 'save') return;
+  const { id: _x, _new: _n, ...data } = i;
+  const corrections = [...(i.corrections || []), { at: new Date().toISOString(), by: by(refs), byName: myName(refs), reason: out.why, changes: out.changes }];
+  const next = { ...data, ...out.patch, corrections };
+  if (!next.completedAt) delete next.completedAt;
+  await store.save('rms_items', id, next, by(refs));
+  toast('Correction saved and recorded in the history.', 'ok');
 }
 
 /* ---------- acknowledgment slip (quarter of a letter-size sheet) ---------- */

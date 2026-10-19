@@ -46,6 +46,25 @@ export function statusPill(i) {
   return pill(t, t === 'Received' || t === 'For Verification' ? 'blue' : t === 'Accepted' ? 'ok' : t === 'Rejected' ? 'bad' : 'warn');
 }
 
+/* ---------- checklist of a report for one office ---------- */
+// Most reports use the Report Library checklist. A report marked "each office has its own list" (e.g. BRS: one line per bank
+// account) uses the office's own list from Office Setup. The office's extra requirement, if any, is added at the end.
+export function itemsFor(r, o) {
+  const base = r.perOffice ? ((o && o.lists && o.lists[r.id]) || []) : (r.checklist || []);
+  return [...base, ...(o && o.note ? [o.note] : [])];
+}
+const LONG = 12;
+// Checklist for screens: every line when short; for long lists (e.g. 75 bank accounts) the count and only what is missing.
+export function checklistHtml(i) {
+  const ck = i.checklist || [], m = ck.filter((c) => !c.ok);
+  const line = (c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`;
+  if (ck.length <= LONG) return `<ul class="rcv-ck">${ck.map(line).join('')}</ul>`;
+  const late = ck.filter((c) => c.ok && c.late);
+  return `<p><b>${ck.length - m.length} of ${ck.length} submitted</b>${late.length ? ` (${late.length} late)` : ''}</p>
+    ${m.length ? `<span class="legend">Missing · ${m.length}</span><ul class="rcv-ck">${m.map(line).join('')}</ul>` : '<p class="ok-t">Nothing missing.</p>'}
+    <details><summary>Show all ${ck.length}</summary><ul class="rcv-ck">${ck.map(line).join('')}</ul></details>`;
+}
+
 /* ---------- submission history ---------- */
 const ORD = ['1st', '2nd', '3rd'];
 const ordinal = (n) => ORD[n - 1] || n + 'th';
@@ -60,7 +79,8 @@ export function historyOf(i) {
   ck.filter((c) => c.ok && c.late).forEach((c) => { (late[c.at] = late[c.at] || []).push(c); });
   Object.keys(late).sort().forEach((at, k) => {
     const got = late[at]; have += got.length;
-    ev.push({ at, who: got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${got.map((c) => c.item).join('; ')})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}` });
+    const names = got.length > 5 ? got.slice(0, 5).map((c) => c.item).join('; ') + `; and ${got.length - 5} more` : got.map((c) => c.item).join('; ');
+    ev.push({ at, who: got[0].byName || '', text: `${ordinal(k + 2)} submission · +${got.length} late document${got.length > 1 ? 's' : ''} (${names})${have === total ? ' · all submitted' : ` · ${total - have} still missing`}` });
   });
   if (i.decision) ev.push({ at: i.decision.at, who: i.decision.byName, decision: true,
     text: (i.decision.action === 'accept' ? 'Accepted' : 'Rejected') + (i.decision.remarks ? ' · ' + i.decision.remarks : '') });
@@ -101,7 +121,7 @@ export function receivingHtml(refs, rms, q) {
     ${verify.length ? `<section class="panel"><div class="panel-head"><h2>For Verification · ${verify.length}</h2></div>
       <div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Report</span><span>Received</span><span>Documents</span><span></span></div>
       ${verify.map((i) => { const m = missing(i), n = (i.checklist || []).length; return `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span><span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
-        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${n - m.length} of ${n} submitted${m.length ? '<br>Missing: ' + m.map((c) => esc(c.item)).join('; ') : ''}</small></span>
+        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${n - m.length} of ${n} submitted${m.length ? '<br>Missing: ' + (m.length > 3 ? m.slice(0, 3).map((c) => esc(c.item)).join('; ') + `; and ${m.length - 3} more` : m.map((c) => esc(c.item)).join('; ')) : ''}</small></span>
         <span class="acts"><button class="btn sm primary" data-decide="${i.id}">Accept / Reject</button><button class="btn sm" data-view="${i.id}">View</button></span></div>`; }).join('')}</section>` : ''}
     ${lacking.length ? `<section class="panel"><div class="panel-head"><h2>Accepted, Still Missing Documents · ${lacking.length}</h2></div>
       ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
@@ -195,10 +215,17 @@ async function receiveForm(refs, rms) {
         const def = tracked.find((p) => !got.has(p)) || ps[ps.length - 1];
         $('#f-per', bg).innerHTML = ps.reverse().map((p) => `<option value="${p}" ${p === def ? 'selected' : ''}>${esc(periodLabel(p))}${got.has(p) ? ' · already received' : ''}</option>`).join('')
           + (r.frequency === 'As needed' ? `<option value="${year}">${year} (as needed)</option>` : '');
-        const items = [...(r.checklist || []), ...(o.note ? [o.note] : [])];
-        $('#f-list', bg).innerHTML = items.map((t, k) => `<label><input type="checkbox" name="ck" value="${k}"> ${esc(t)}</label>`).join('')
-          + `<div class="btn-row"><button type="button" class="btn sm" id="f-all">Tick all</button></div>`;
+        const items = itemsFor(r, o);
+        const many = items.length > LONG;
+        $('#f-list', bg).innerHTML = (r.perOffice && !(o.lists && (o.lists[r.id] || []).length)
+          ? `<p class="warn-t">No ${esc((r.lineLabel || 'line').toLowerCase())}s are listed for this office yet. Add them in Office Setup (${esc(r.code)}).</p>` : '')
+          + (r.perOffice && (r.checklist || []).length ? `<small>Each ${esc((r.lineLabel || 'line').toLowerCase())} includes: ${esc(r.checklist.join(', '))}</small>` : '')
+          + (many ? `<input class="input" id="f-find" placeholder="Search ${items.length} ${r.perOffice ? esc((r.lineLabel || 'line').toLowerCase()) + 's' : 'items'}">` : '')
+          + `<div class="rcv-items${many ? ' long' : ''}">${items.map((t, k) => `<label data-t="${esc(t.toLowerCase())}"><input type="checkbox" name="ck" value="${k}"> ${esc(t)}</label>`).join('')}</div>`
+          + `<div class="btn-row"><button type="button" class="btn sm" id="f-all">Tick all</button>${many ? '<button type="button" class="btn sm" id="f-none">Untick all</button>' : ''}</div>`;
         $('#f-all', bg).onclick = () => { $$('input[name=ck]', bg).forEach((x) => { x.checked = true; }); state(); };
+        if ($('#f-none', bg)) $('#f-none', bg).onclick = () => { $$('input[name=ck]', bg).forEach((x) => { x.checked = false; }); state(); };
+        if ($('#f-find', bg)) $('#f-find', bg).oninput = () => { const v = $('#f-find', bg).value.trim().toLowerCase(); $$('.rcv-items label', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
         $$('input[name=ck]', bg).forEach((x) => { x.onchange = state; });
         dueHint(); state(); decState();
       };
@@ -285,7 +312,8 @@ async function receiveForm(refs, rms) {
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
         if (!r) { toast('This office has no report ticked. Tick its reports in Office Setup first.', 'bad'); return false; }
         const period = $('#f-per', bg).value;
-        const items = [...(r.checklist || []), ...(o.note ? [o.note] : [])];
+        const items = itemsFor(r, o);
+        if (!items.length) { toast(`No ${(r.lineLabel || 'line').toLowerCase()}s are listed for this office yet. Add them in Office Setup.`, 'bad'); return false; }
         const ticked = new Set($$('input[name=ck]:checked', bg).map((x) => +x.value));
         if (!ticked.size) { toast('Tick at least one document received.', 'bad'); return false; }
         const at = base.receivedAt;
@@ -345,7 +373,7 @@ async function decide(refs, rms, id) {
   const res = await modal({
     title: 'Accept or Reject · ' + numberOf(i),
     body: `<p><b>${esc(off?.label || '')}</b> · ${esc(i.reportCode + ' · ' + periodLabel(i.period))}<br><small>Received ${esc(fmtDT(i.receivedAt))} by ${esc(i.receivedByName)} · received from ${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</small></p>
-      <div><span class="legend">Checklist · ${i.checklist.filter((c) => c.ok).length} of ${i.checklist.length} submitted</span><ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`).join('')}</ul></div>
+      <div><span class="legend">Checklist · ${i.checklist.filter((c) => c.ok).length} of ${i.checklist.length} submitted</span>${checklistHtml(i)}</div>
       <div class="rcv-type"><label><input type="radio" name="dec" value="accept" checked> Accept${missing(i).length ? ' – missing documents to follow' : ''}</label><label><input type="radio" name="dec" value="reject"> Reject – return to the submitter</label></div>
       <div class="field"><label for="d-rem">Remarks <span id="d-req" hidden>(required for a rejection)</span></label><input class="input" id="d-rem" placeholder="e.g. Accepted; DVs to follow within 5 days"></div>`,
     onOpen: (bg) => { $$('input[name=dec]', bg).forEach((x) => { x.onchange = () => { $('#d-req', bg).hidden = x.value !== 'reject' || !x.checked; }; }); },
@@ -375,8 +403,17 @@ async function addLate(refs, rms, id) {
   let picked = null;
   const res = await modal({
     title: 'Add Late Documents · ' + numberOf(i),
-    body: `<p>Tick the missing documents received now. Today's date is recorded for each.</p>
-      <div class="rcv-list">${i.checklist.map((c, k) => c.ok ? `<label class="done">✓ ${esc(c.item)} <small>received ${esc(fmtDate(c.at))}</small></label>` : `<label><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')}</div>`,
+    // Long lists (e.g. 75 bank accounts): only the missing ones, with a search box.
+    body: (() => { const many = i.checklist.length > LONG, miss = i.checklist.map((c, k) => ({ c, k })).filter((x) => !x.c.ok);
+      return `<p>Tick the missing documents received now. Today's date is recorded for each.</p>
+      ${many ? `<p><b>${i.checklist.length - miss.length} of ${i.checklist.length} already submitted.</b> Missing: ${miss.length}</p><input class="input" id="l-find" placeholder="Search the missing ones">` : ''}
+      <div class="rcv-list"><div class="rcv-items${many ? ' long' : ''}">${many ? miss.map(({ c, k }) => `<label data-t="${esc(c.item.toLowerCase())}"><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')
+        : i.checklist.map((c, k) => c.ok ? `<label class="done">✓ ${esc(c.item)} <small>received ${esc(fmtDate(c.at))}</small></label>` : `<label><input type="checkbox" name="late" value="${k}"> ${esc(c.item)}</label>`).join('')}</div>
+        ${many ? '<div class="btn-row"><button type="button" class="btn sm" id="l-all">Tick all shown</button></div>' : ''}</div>`; })(),
+    onOpen: (bg) => {
+      if ($('#l-find', bg)) $('#l-find', bg).oninput = () => { const v = $('#l-find', bg).value.trim().toLowerCase(); $$('.rcv-items label', bg).forEach((l) => { l.hidden = v && !l.dataset.t.includes(v); }); };
+      if ($('#l-all', bg)) $('#l-all', bg).onclick = () => { $$('.rcv-items label', bg).forEach((l) => { if (!l.hidden) $('input', l).checked = true; }); };
+    },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save', cls: 'primary', value: 'save', check: (bg) => {
       picked = $$('input[name=late]:checked', bg).map((x) => +x.value);
       if (!picked.length) { toast('Tick the documents received.', 'bad'); return false; } return true; } }]
@@ -401,7 +438,7 @@ function viewItem(refs, rms, id) {
     ${row('Received', esc(fmtDT(i.receivedAt)) + ' by ' + esc(i.receivedByName))}
     ${row('Received from', esc(i.submittedBy) + (i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''))}
     ${i.pendingCode && i.trackingNo ? row('Pending code', `<span class="mono">${esc(i.pendingCode)}</span>`) : ''}
-    ${i.checklist ? row('Checklist', `<ul class="rcv-ck">${i.checklist.map((c) => `<li class="${c.ok ? 'ok' : 'miss'}">${esc(c.item)}${c.late ? ` <small>· late, ${esc(fmtDate(c.at))}</small>` : ''}</li>`).join('')}</ul>`) : ''}
+    ${i.checklist ? row('Checklist', checklistHtml(i)) : ''}
     ${row('History', historyHtml(i))}
     ${i.remarks ? row('Remarks', esc(i.remarks)) : ''}` });
 }
@@ -423,7 +460,7 @@ export function printSlip(refs, rms, i) {
     .no{text-align:center; border:1.5px ${pend ? 'dashed' : 'solid'} #111; padding:5px 4px; margin-bottom:8px} .no small{display:block; font-size:7.5pt; letter-spacing:1px} .no b{font:700 13pt Consolas,"Courier New",monospace}
     .kv{display:grid; grid-template-columns:0.95in 1fr; gap:2px 6px; font-size:9pt; margin-bottom:6px} .kv span:nth-child(odd){color:#444}
     .sec{font-weight:700; font-size:8.5pt; letter-spacing:.6px; border-bottom:1px solid #999; margin:6px 0 3px}
-    ul{margin:0; padding:0; list-style:none; font-size:9pt} li{padding:1px 0 1px 16px; position:relative} li.ok:before{content:"✓"; position:absolute; left:2px; font-weight:700} li.miss:before{content:"✗"; position:absolute; left:2px; font-weight:700}
+    ul{margin:0; padding:0; list-style:none; font-size:9pt} ul.cols{columns:2; column-gap:10px; font-size:8pt} ul.cols li{break-inside:avoid} li{padding:1px 0 1px 16px; position:relative} li.ok:before{content:"✓"; position:absolute; left:2px; font-weight:700} li.miss:before{content:"✗"; position:absolute; left:2px; font-weight:700}
     .note{font-size:8pt; border:1px solid #999; padding:4px 6px; margin-top:7px; background:#f6f6f6}
     .foot{margin-top:auto; padding-top:10px; display:flex; justify-content:space-between; font-size:8pt; gap:10px} .sig{border-top:1px solid #111; padding-top:2px; text-align:center; min-width:1.6in}
     @media print{ .slip{border:0} }</style></head><body><div class="slip">
@@ -434,8 +471,12 @@ export function printSlip(refs, rms, i) {
       ${i.kind === 'comm' ? `<span>Subject</span><span>${esc(i.subject)}${i.pages ? ' · ' + esc(i.pages) : ''}</span>` : `<span>Report</span><span>${esc((rep?.name || i.reportCode) + ' · ' + periodLabel(i.period))}</span>`}
       <span>Received</span><span>${esc(new Date(i.receivedAt).toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span>
       <span>Received from</span><span>${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</span></div>
-    ${i.kind === 'report' ? `<div class="sec">SUBMITTED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}${c.late ? ' (' + esc(fmtDate(c.at)) + ')' : ''}</li>`).join('')}</ul>
-      <div class="sec">MISSING</div><ul>${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>
+    ${i.kind === 'report' ? `${i.checklist.length > LONG
+      // Long lists (e.g. 75 bank accounts): the count submitted, and the missing ones (the full list is in the app).
+      ? `<div class="sec">SUBMITTED</div><ul><li class="ok">${okList.length} of ${i.checklist.length}${rep?.lineLabel ? ' ' + esc(rep.lineLabel.toLowerCase()) + 's' : ''}${okList.some((c) => c.late) ? ` (${okList.filter((c) => c.late).length} late)` : ''}</li></ul>
+        <div class="sec">MISSING · ${miss.length}</div><ul class="${miss.length > 14 ? 'cols' : ''}">${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>`
+      : `<div class="sec">SUBMITTED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}${c.late ? ' (' + esc(fmtDate(c.at)) + ')' : ''}</li>`).join('')}</ul>
+      <div class="sec">MISSING</div><ul>${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>`}
       ${ver ? `<div class="note">Received subject to verification by the Auditor.${miss.length ? ' Please submit the missing documents, quoting this tracking number.' : ''}</div>`
         : miss.length && i.status !== 'rejected' ? `<div class="note">Please submit the missing documents, quoting this tracking number.</div>` : ''}
       ${i.status === 'rejected' && i.decision?.remarks ? `<div class="note">Rejected: ${esc(i.decision.remarks)}</div>` : ''}` : ''}

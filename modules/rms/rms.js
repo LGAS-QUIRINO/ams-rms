@@ -4,7 +4,7 @@ import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { roleLine } from '../../js/views/admin.js';
 import { moduleFrame } from '../../js/frame.js';
-import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml } from './receiving.js';
+import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml, checklistHtml, itemsFor } from './receiving.js';
 
 // Load this module's look once.
 if (!document.querySelector('link[data-rms]')) {
@@ -266,6 +266,9 @@ function groupedOptions(rms, reports, selected) {
 }
 
 /* ================= Submission Monitor ================= */
+// For reports with an office's own list (e.g. BRS per bank account): how many lines are in, e.g. "62/75".
+const countOf = (x) => { const it = x.st && x.st.item; if (!it || !x.c.r.perOffice || !(it.checklist || []).length) return '';
+  const ck = it.checklist; return `<small class="cnt">${ck.filter((c) => c.ok).length}/${ck.length}</small>`; };
 function monitorHtml(refs, rms, q) {
   const scopes = scopesFor(refs);
   if (!scopes.length) return `<div class="msg bad">No team is assigned to you yet. Ask the Admin to set your team in Users &amp; Roles.</div>`;
@@ -311,7 +314,7 @@ function monitorHtml(refs, rms, q) {
       <div class="mon-sum">${pill('✓ Complete ' + (tally.complete || 0), 'ok')}${pill('L Late ' + (tally.late || 0), 'late')}${pill('V For verification ' + (tally.verify || 0), 'blue')}${pill('½ Missing documents ' + (tally.incomplete || 0), 'warn')}${pill('! Overdue ' + (tally.overdue || 0), 'bad')}${pill('· Not yet due ' + ((tally.notdue || 0) + (tally.nodue || 0)))}${tally.untracked ? pill('— Before monitoring ' + tally.untracked) : ''}</div>
       ${shown.length ? `<div class="mon-wrap"><table class="mon"><thead>${groupRow}<tr><th>Office · Code</th>${columns.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead><tbody>
         ${shown.map((g) => `<tr><th><b>${esc(g.o.label)}</b><small class="mono">${esc(g.o.code || 'no office code')}</small></th>${g.cs.map((x) => x.st
-          ? `<td class="c ${x.st.s}" data-cell="${esc(g.o.id)}|${esc(x.c.r.id)}|${esc(x.c.p)}" title="${esc(STATUS_TEXT[x.st.s])}">${MARK[x.st.s]}</td>` : '<td class="c na"></td>').join('')}</tr>`).join('')}
+          ? `<td class="c ${x.st.s}" data-cell="${esc(g.o.id)}|${esc(x.c.r.id)}|${esc(x.c.p)}" title="${esc(STATUS_TEXT[x.st.s])}">${MARK[x.st.s]}${countOf(x)}</td>` : '<td class="c na"></td>').join('')}</tr>`).join('')}
         </tbody></table></div>`
         : `<div class="empty"><b>${rows.length ? 'Nothing to show for this filter' : 'No office submits this report yet'}</b>${rows.length ? 'Try Show: All offices.' : 'Tick the report for the offices in Office Setup.'}</div>`}
       <div class="note">Monitoring starts with ${esc(periodLabel(rms.startPeriod))}; earlier periods show “—”. ${mode === 'month' ? esc(r.code + ' is ' + r.frequency.toLowerCase() + ', due ' + dueText(r).toLowerCase() + '.') : 'Quarterly, semi-annual and annual reports show the period that includes the chosen month.'}</div>
@@ -334,10 +337,10 @@ function wireMonitor(refs, rms, q) {
     box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], STATUS_PILL[st.s] || '')}</span></div>
       ${row('Due', st.due ? esc(fmtDate(st.due)) : 'No set due date')}
       ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDT(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · received from ' + esc(it.submittedBy) : ''}`)
-        + row('Checklist', (it.checklist || []).map((c) => `${c.ok ? '✓' : '✗'} ${esc(c.item)}${c.late ? ' <small>(late, ' + esc(fmtDate(c.at)) + ')</small>' : ''}`).join(' &nbsp; ') || '—')
+        + row('Checklist', it.checklist ? checklistHtml(it) : '—')
         + row('History', historyHtml(it))
         : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}
-      ${row('Checklist required', (r.checklist || []).map(esc).join(' · '))}`;
+      ${row('Checklist required', r.perOffice ? `${itemsFor(r, o).length} ${esc((r.lineLabel || 'line').toLowerCase())}s (Office Setup)` : (r.checklist || []).map(esc).join(' · '))}`;
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }; });
 }
@@ -370,7 +373,7 @@ function libraryHtml(refs, rms, q) {
         <div id="rep-list">${list.map((r) => { const n = used(r.id); return `${head(r)}<div class="t-row ${r.active === false ? 'removed' : ''}" style="${cols}" data-find="${esc((r.code + ' ' + r.name).toLowerCase())}">
           <span class="mono"><b>${esc(r.code)}</b></span><span><b>${esc(r.name)}</b>${r.bulk ? ' ' + pill('Bulk', 'blue') : ''}${r.basis ? `<br><small>${esc(r.basis)}</small>` : ''}${r.active === false ? ' ' + pill('Inactive') : ''}</span>
           <span>${esc(r.frequency)}<br><small>${esc(dueText(r))}</small></span>
-          <span>${(r.checklist || []).length} item${(r.checklist || []).length === 1 ? '' : 's'}</span>
+          <span>${r.perOffice ? `Per office<br><small>one line per ${esc((r.lineLabel || 'line').toLowerCase())}</small>` : `${(r.checklist || []).length} item${(r.checklist || []).length === 1 ? '' : 's'}`}</span>
           <span><small>${n ? n + ' office' + (n > 1 ? 's' : '') : 'Not used yet'}</small></span>
           <span>${edit ? `<button class="btn sm" data-edit-rep="${r.id}">Edit</button>` : `<button class="btn sm" data-view-rep="${r.id}">View</button>`}</span></div>`; }).join('')}</div>`
       : `<div class="empty"><b>No reports yet</b>${edit ? 'Add the first report with its code, schedule and checklist. Teams can then tick it for their offices.' : 'The Admin or SA Staff add the reports here. Teams can then tick them for their offices.'}</div>`}
@@ -428,7 +431,8 @@ async function editGroups(refs, rms) {
 function viewReport(rms, id) {
   const r = rms.reports.find((x) => x.id === id);
   modal({ title: `${r.code} · ${r.name}`, body: `<p><b>Schedule:</b> ${esc(r.frequency)} · ${esc(dueText(r))}</p><p><b>Group:</b> ${esc(groupName(rms, r) || 'No group')}${r.bulk ? ' · Bulk (always For Verification)' : ''}</p>${r.basis ? `<p><b>Legal basis:</b> ${esc(r.basis)}</p>` : ''}
-    <div><span class="legend">Checklist</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}</li>`).join('')}</ol></div>` });
+    ${r.perOffice ? `<p><b>Checklist:</b> each office has its own list (one line per ${esc((r.lineLabel || 'line').toLowerCase())}), set in Office Setup.</p>` : ''}
+    <div><span class="legend">${r.perOffice ? 'Each line includes' : 'Checklist'}</span><ol class="rms-ol">${(r.checklist || []).map((c) => `<li>${esc(c)}</li>`).join('')}</ol></div>` });
 }
 
 async function editReport(refs, rms, id) {
@@ -450,7 +454,10 @@ async function editReport(refs, rms, id) {
           <option value="none" ${r.due.kind === 'none' ? 'selected' : ''}>No set due date</option></select>
           <div class="rms-due-n"><input class="input" id="r-due-n" type="number" min="1" max="31" value="${esc(r.due.days || r.due.day || 10)}"><span id="r-due-unit" class="hint"></span></div>
           <span class="hint">Used to flag late and missing submissions.</span></div></div>
-      <div><span class="legend">Checklist (documents that make up this report)</span>
+      <div class="field rcv-per"><label><input type="checkbox" id="r-per" ${r.perOffice ? 'checked' : ''}> Each office has its own list (e.g. BRS: one line per bank account)</label>
+        <div class="rms-due-n" id="r-per-box"><label for="r-line" class="hint">Each line is a</label><input class="input" id="r-line" style="width:200px" value="${esc(r.lineLabel || 'Bank account')}"></div>
+        <span class="hint">The office's lines (e.g. the Province's 75 bank accounts) are entered in Office Setup. At receiving, the JO ticks which lines came in.</span></div>
+      <div><span class="legend" id="r-items-legend">Checklist (documents that make up this report)</span>
         <div class="list-edit" id="r-items"></div>
         <span class="hint">During receiving, the receiver ticks which of these were actually submitted.</span></div>
       <div class="field"><label><input type="checkbox" id="r-bulk" ${r.bulk ? 'checked' : ''}> Bulk report (e.g. with DVs): always received For Verification, even when an auditor receives it</label></div>
@@ -467,6 +474,9 @@ async function editReport(refs, rms, id) {
         const nw = $('#r-new', bg);
         nw.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = nw.value.trim(); if (v) { items.push(v); draw(); $('#r-new', bg).focus(); } } };
       };
+      const perState = () => { const on = $('#r-per', bg).checked; $('#r-per-box', bg).hidden = !on;
+        $('#r-items-legend', bg).textContent = on ? 'What each line includes (a reminder for the receiver; optional)' : 'Checklist (documents that make up this report)'; };
+      $('#r-per', bg).onchange = perState; perState();
       const dueState = () => { const k = $('#r-due', bg).value; $('.rms-due-n', bg).hidden = k === 'none'; $('#r-due-unit', bg).textContent = k === 'after' ? 'days after the period ends' : 'day of the following period'; };
       $('#r-due', bg).onchange = dueState; draw(); dueState();
     },
@@ -476,12 +486,13 @@ async function editReport(refs, rms, id) {
       if (!/^[A-Z0-9]{1,10}$/.test(code)) { toast('Enter a report code: letters and numbers only, up to 10.', 'bad'); return false; }
       if (rms.reports.some((x) => x.id !== id && x.code === code)) { toast(`Report code ${code} is already used.`, 'bad'); return false; }
       const name = $('#r-name', bg).value.trim(); if (!name) { toast('Enter the report name.', 'bad'); return false; }
-      if (!items.length) { toast('Add at least one document to the checklist.', 'bad'); return false; }
+      const per = $('#r-per', bg).checked, lineLabel = $('#r-line', bg).value.trim() || 'Line';
+      if (!per && !items.length) { toast('Add at least one document to the checklist.', 'bad'); return false; }
       const kind = $('#r-due', bg).value, n = parseInt($('#r-due-n', bg).value, 10);
       if (kind !== 'none' && !(n >= 1 && n <= 31)) { toast('Enter the number of days (1 to 31).', 'bad'); return false; }
       out = { code, name, basis: $('#r-basis', bg).value.trim(), frequency: $('#r-freq', bg).value,
         due: kind === 'none' ? { kind } : kind === 'after' ? { kind, days: n } : { kind, day: n }, checklist: items, active: id ? $('#r-active', bg).value === 'yes' : true,
-        groupId: $('#r-group', bg).value, bulk: $('#r-bulk', bg).checked };
+        groupId: $('#r-group', bg).value, bulk: $('#r-bulk', bg).checked, perOffice: per, ...(per ? { lineLabel } : {}) };
       return true;
     } }]
   });
@@ -502,7 +513,10 @@ function officesHtml(refs, rms, q) {
   const offices = rows.flatMap((a) => [a.main, ...a.extra]).filter(Boolean);
   const noCode = rows.filter((a) => !a.main || !a.main.code).length;
   const repCode = (rid) => rms.reports.find((r) => r.id === rid);
-  const chips = (o) => (o && (o.reportIds || []).length) ? (o.reportIds.map(repCode).filter(Boolean).sort((x, y) => x.code.localeCompare(y.code)).map((r) => pill(r.code, r.active === false ? '' : 'blue')).join('')) : '<small>—</small>';
+  const chips = (o) => (o && (o.reportIds || []).length) ? (o.reportIds.map(repCode).filter(Boolean).sort((x, y) => x.code.localeCompare(y.code)).map((r) => {
+    if (!r.perOffice) return pill(r.code, r.active === false ? '' : 'blue');
+    const n = ((o.lists || {})[r.id] || []).length;
+    return pill(`${r.code} · ${n}`, n ? 'blue' : 'warn'); }).join('')) : '<small>—</small>';
   const cols = 'grid-template-columns:minmax(190px,1.3fr) 150px minmax(150px,1fr) 128px';
   const label = (s) => s.data.kind === 'province' ? 'Province of Quirino' : s.data.name;
   return `<div class="page">
@@ -557,8 +571,25 @@ async function editOffice(refs, rms, a, extra) {
         ${active.length ? `<div class="checks">${active.map((r) => `<label><input type="checkbox" name="rep" value="${r.id}" ${(o.reportIds || []).includes(r.id) ? 'checked' : ''}> <span class="mono">${esc(r.code)}</span>&nbsp;· ${esc(r.name)}</label>`).join('')}</div>`
           : '<span class="hint">The Report Library is still empty. Ask the Admin or SA Staff to add the reports first.</span>'}
         <span class="hint">Only reports in the Report Library are listed.</span></div>
+      <div id="o-lists"></div>
       <div class="field"><label for="o-note">Extra requirement for this office only (optional)</label><input class="input" id="o-note" value="${esc(o.note || '')}" placeholder="e.g. Copy of resolution for the 20% DF projects"></div>
       ${isExtra && extra !== 'new' ? `<div class="field"><label for="o-active">Status</label><select class="input" id="o-active"><option value="yes" ${o.active !== false ? 'selected' : ''}>Active</option><option value="no" ${o.active === false ? 'selected' : ''}>Inactive (no longer submits)</option></select></div>` : ''}`,
+    // Reports with an office's own list (e.g. BRS): one box per ticked report, one line per bank account.
+    onOpen: (bg) => {
+      const typed = { ...(o.lists || {}) };
+      const draw = () => {
+        $$('textarea[data-list]', bg).forEach((t) => { typed[t.dataset.list] = t.value.split('\n').map((x) => x.trim()).filter(Boolean); });
+        const ticked = $$('input[name=rep]:checked', bg).map((x) => rms.reports.find((r) => r.id === x.value)).filter((r) => r && r.perOffice);
+        $('#o-lists', bg).innerHTML = ticked.map((r) => { const lines = typed[r.id] || [];
+          return `<div class="field"><label for="ol-${r.id}">${esc(r.code)} · ${esc(r.lineLabel || 'Line')}s of this office <small class="hint" data-n="${r.id}">${lines.length} listed</small></label>
+            <textarea class="input mono" id="ol-${r.id}" data-list="${r.id}" rows="${Math.min(10, Math.max(4, lines.length + 1))}" placeholder="One per line, e.g. General Fund – LBP 1234-5678-90">${esc(lines.join('\n'))}</textarea>
+            <span class="hint">One ${esc((r.lineLabel || 'line').toLowerCase())} per line. You can paste a column from Excel.</span></div>`; }).join('');
+        $$('textarea[data-list]', bg).forEach((t) => { t.oninput = () => { const n = t.value.split('\n').filter((x) => x.trim()).length; $(`[data-n="${t.dataset.list}"]`, bg).textContent = n + ' listed'; }; });
+      };
+      $$('input[name=rep]', bg).forEach((x) => { x.addEventListener('change', draw); });
+      draw();
+      bg._lists = () => { const out = { ...typed }; $$('textarea[data-list]', bg).forEach((t) => { out[t.dataset.list] = [...new Set(t.value.split('\n').map((x) => x.trim()).filter(Boolean))]; }); return out; };
+    },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save', cls: 'primary', value: 'save', check: (bg) => {
       const code = $('#o-code', bg).value.trim().toUpperCase().replace(/\s+/g, '');
       const name = isExtra ? $('#o-name', bg).value.trim() : '';
@@ -568,7 +599,7 @@ async function editOffice(refs, rms, a, extra) {
       const mine = extra === 'new' ? null : isExtra ? o.id : a.main?.id;
       const dup = rms.offices.find((x) => x.id !== mine && x.code === code);
       if (dup) { toast(`Office code ${code} is already used by ${dup.name}.`, 'bad'); return false; }
-      out = { code, ...(isExtra ? { name } : {}), reportIds: $$('input[name=rep]:checked', bg).map((x) => x.value), note: $('#o-note', bg).value.trim(),
+      out = { code, ...(isExtra ? { name } : {}), reportIds: $$('input[name=rep]:checked', bg).map((x) => x.value), note: $('#o-note', bg).value.trim(), lists: bg._lists(),
         active: isExtra && extra !== 'new' ? $('#o-active', bg).value === 'yes' : true };
       return true;
     } }]

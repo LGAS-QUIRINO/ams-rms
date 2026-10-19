@@ -104,3 +104,13 @@ ol.rcv-hist{margin:0; padding-left:18px; font-size:13px; line-height:1.55}
 ol.rcv-hist li.dec{font-weight:600}
 ol.rcv-hist small{color:var(--muted); font-weight:400}
 #g-items .txt{flex:1}
+
+/* Office's own lists (e.g. BRS per bank account) – 19 Oct 2026 */
+.rcv-items{display:flex; flex-direction:column; gap:6px}
+.rcv-items.long{max-height:320px; overflow:auto; padding-right:6px}
+.rcv-items label[hidden]{display:none}
+#f-find, #l-find{margin:4px 0}
+td.c small.cnt{display:block; font-size:10.5px; font-weight:600}
+.rcv-per [hidden]{display:none !important}
+details summary{cursor:pointer; color:var(--blue); font-size:12.5px; margin-top:6px}
+textarea.input{font-size:12.5px; line-height:1.5; resize:vertical}

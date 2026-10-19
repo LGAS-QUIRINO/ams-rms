@@ -4,7 +4,7 @@ import { store, newId } from '../../js/store.js';
 import { esc, pill, modal, toast, $, $$ } from '../../js/ui.js';
 import { roleLine } from '../../js/views/admin.js';
 import { moduleFrame } from '../../js/frame.js';
-import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, lacksDocs, historyHtml, checklistHtml, itemsFor, isGrouped, lineTally, unpackItem } from './receiving.js';
+import { receivingHtml, wireReceiving, numberOf, statusPill, isVerify, historyHtml, checklistHtml, itemsFor, isGrouped, lineTally, unpackItem, periodRecs, periodState, periodOf, isIn } from './receiving.js';
 
 // Load this module's look once.
 if (!document.querySelector('link[data-rms]')) {
@@ -94,14 +94,14 @@ export const fmtDT = (d) => d ? new Date(d).toLocaleString('en-US', { month: 'sh
 // untracked (before monitoring starts) · nodue · notdue · verify · complete · late · incomplete · overdue
 function cellStatus(rms, office, r, p, now = new Date()) {
   { const [y, , e] = span(p); if (`${y}-${String(e).padStart(2, '0')}` < rms.startPeriod) return { s: 'untracked' }; }
-  // Rejected submissions do not count; the latest of the rest decides.
-  const got = rms.items.filter((i) => i.officeId === office.id && i.reportId === r.id && i.period === p && i.status !== 'rejected')
-    .sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt)))[0];
+  // All transmittals of the period count together (rejected ones do not): a period is complete once everything is in.
+  const recs = periodRecs(rms, office.id, r.id, p);
   const due = dueDate(r, p);
-  if (got) {
-    if (isVerify(got)) return { s: 'verify', item: got, due };
-    if (lacksDocs(got)) return { s: 'incomplete', item: got, due };
-    return { s: due && new Date(got.completedAt || got.receivedAt) > due ? 'late' : 'complete', item: got, due };
+  if (recs.length) {
+    const agg = periodState(recs), got = recs[recs.length - 1];
+    if (agg.verify) return { s: 'verify', item: got, agg, due };
+    if (!agg.done) return { s: 'incomplete', item: got, agg, due };
+    return { s: due && new Date(agg.completedAt || got.receivedAt) > due ? 'late' : 'complete', item: got, agg, due };
   }
   const [y, , b] = span(p);
   if (!due) return { s: new Date(y, b, 0) < now ? 'nodue' : 'notdue', due };
@@ -210,7 +210,10 @@ function overviewHtml(refs, rms, overdue) {
   const mine = rms.items.filter((i) => offIds.has(i.officeId));
   const thisMonth = mine.filter((i) => String(i.encodedAt || i.receivedAt).slice(0, 7) === ym).length;
   const verify = mine.filter(isVerify);
-  const lacking = mine.filter((i) => lacksDocs(i) && !isVerify(i));
+  // Periods still incomplete over all their transmittals (one per office, report and period).
+  const seenP = new Set(), lacking = [];
+  mine.filter((i) => i.kind !== 'comm' && i.status !== 'rejected').forEach((i) => { const k = `${i.officeId}|${i.reportId}|${i.period}`; if (seenP.has(k)) return; seenP.add(k);
+    const agg = periodOf(rms, i); if (!agg.done && !agg.verify) lacking.push(agg.recs[agg.recs.length - 1]); });
   const incomplete = [...verify, ...lacking];
   const teamNames = [...new Set(myTeams(refs).map((t) => refs.team[t]?.data.name).filter(Boolean))].join(', ');
   const recent = [...mine].sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt))).slice(0, 8);
@@ -226,7 +229,7 @@ function overviewHtml(refs, rms, overdue) {
       <div class="btn-row"><a class="btn" href="#/rms/monitor">Open Submission Monitor</a><a class="btn primary" href="#/rms/receiving?new=1">+ Receive Documents</a></div></div>
     <div class="stats">
       <div class="stat"><span>Received This Month</span><b>${thisMonth}</b><small>tracking numbers issued</small></div>
-      <a class="stat" href="#/rms/receiving"><span>For Verification</span><b class="${verify.length ? 'warn' : ''}">${verify.length}</b><small>${lacking.length} accepted with missing documents</small></a>
+      <a class="stat" href="#/rms/receiving"><span>For Verification</span><b class="${verify.length ? 'warn' : ''}">${verify.length}</b><small>${lacking.length} period${lacking.length === 1 ? '' : 's'} still missing documents</small></a>
       <a class="stat" href="#/rms/monitor?show=overdue"><span>Overdue</span><b class="${overdue.length ? 'bad' : ''}">${overdue.length}</b><small>past due, not yet submitted</small></a>
       <div class="stat"><span>Borrowed Out</span><b class="dim">—</b><small>comes with the Borrow Log</small></div>
     </div>
@@ -240,7 +243,7 @@ function overviewHtml(refs, rms, overdue) {
       <section class="panel">
         <div class="panel-head"><h2>Needs Attention</h2></div>
         ${top.map((g) => `<a class="actrow" href="#/rms/monitor?r=${encodeURIComponent(g.r.id)}&y=${g.p.slice(0, 4)}&show=overdue"><b>${g.n} office${g.n > 1 ? "s" : ""}</b> ${g.n > 1 ? "have" : "has"} not submitted their ${esc(periodLabel(g.p))} ${esc(g.r.code)}.<small>Overdue since ${esc(fmtDate(dueDate(g.r, g.p)))} · consider demand letters</small></a>`).join('')}
-        ${incomplete.slice(0, 3).map((i) => `<a class="actrow" href="#/rms/receiving"><b class="mono">${esc(numberOf(i))}</b> ${isVerify(i) ? 'is waiting for verification by the auditor' : 'is still missing documents'}.<small>${esc(office(i.officeId)?.label || '')} · received ${esc(fmtDate(i.receivedAt))}</small></a>`).join('')}
+        ${incomplete.slice(0, 3).map((i) => `<a class="actrow" href="#/rms/receiving"><b class="mono">${esc(numberOf(i))}</b> ${isVerify(i) ? 'is waiting for verification by the auditor' : `· ${esc(periodLabel(i.period))} ${esc(i.reportCode || '')} is still missing documents`}.<small>${esc(office(i.officeId)?.label || '')} · received ${esc(fmtDate(i.receivedAt))}</small></a>`).join('')}
         ${noCode ? `<a class="actrow" href="#/rms/setup/offices"><b>${noCode} auditee${noCode > 1 ? 's' : ''}</b> still ${noCode > 1 ? 'have' : 'has'} no office code.<small>Office Setup</small></a>` : ''}
         ${!rms.reports.length ? `<a class="actrow" href="#/rms/setup/library"><b>The Report Library is empty.</b><small>The Admin or SA Staff add the reports first.</small></a>` : ''}
         ${!top.length && !incomplete.length && !noCode && rms.reports.length ? '<div class="empty"><b>All clear</b>Nothing needs attention right now.</div>' : ''}
@@ -268,8 +271,8 @@ function groupedOptions(rms, reports, selected) {
 /* ================= Submission Monitor ================= */
 // For reports with an office's own list (e.g. BRS per bank account): how many lines are in, e.g. "62/75".
 // With a checklist per line (account), the count is of complete accounts.
-const countOf = (x) => { const it = x.st && x.st.item; if (!it || !x.c.r.perOffice || !(it.checklist || []).length) return '';
-  const ck = it.checklist;
+const countOf = (x) => { const agg = x.st && x.st.agg; if (!agg || !x.c.r.perOffice || !agg.checklist.length) return '';
+  const ck = agg.checklist;
   if (isGrouped(ck)) { const t = lineTally(ck); return `<small class="cnt">${t.done.length}/${t.total}</small>`; }
   return `<small class="cnt">${ck.filter((c) => c.ok).length}/${ck.length}</small>`; };
 function monitorHtml(refs, rms, q) {
@@ -339,9 +342,9 @@ function wireMonitor(refs, rms, q) {
     const it = st.item;
     box.innerHTML = `<div class="panel-head"><h2>${esc(o.name)} · ${esc(r.code)} · ${esc(periodLabel(p))}</h2><span class="r">${pill(STATUS_TEXT[st.s], STATUS_PILL[st.s] || '')}</span></div>
       ${row('Due', st.due ? esc(fmtDate(st.due)) : 'No set due date')}
-      ${it ? row(it.trackingNo ? 'Tracking No.' : 'Pending Code', `<span class="mono">${esc(numberOf(it))}</span> ${statusPill(it)}`) + row('Received', `${esc(fmtDate(it.receivedAt))}${it.receivedByName ? ' by ' + esc(it.receivedByName) : ''}${it.submittedBy ? ' · received from ' + esc(it.submittedBy) : ''}`)
-        + row('Checklist', it.checklist ? checklistHtml(it) : '—')
-        + row('History', historyHtml(it))
+      ${it ? row(st.agg.recs.length > 1 ? `Transmittals · ${st.agg.recs.length}` : 'Transmittal', st.agg.recs.map((x) => { const n = isGrouped(x.checklist) ? lineTally(x.checklist.map((c) => ({ ...c }))).rows.filter(([, es]) => es.some((e) => e.ok || e.na)).length : (x.checklist || []).filter((c) => c.ok).length;
+          return `<div><span class="mono">${esc(numberOf(x))}</span> ${statusPill(x)} <small>received ${esc(fmtDate(x.receivedAt))}${x.submittedBy ? ' from ' + esc(x.submittedBy) : ''} · ${n} ${isGrouped(x.checklist) ? esc(((x.lineLabel || 'account') + (n === 1 ? '' : 's')).toLowerCase()) : 'document(s)'}</small></div>`; }).join(''))
+        + row('Period checklist', checklistHtml({ checklist: st.agg.checklist, lineLabel: st.agg.lineLabel }))
         : row('Received', st.s === 'untracked' ? 'Before monitoring started' : 'Nothing received yet')}
       ${row('Checklist required', r.perOffice ? `${((o.lists || {})[r.id] || []).length} ${esc((r.lineLabel || 'line').toLowerCase())}s (Office Setup)${(r.checklist || []).length ? ', each with: ' + r.checklist.map(esc).join(' · ') : ''}` : (r.checklist || []).map(esc).join(' · '))}`;
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });

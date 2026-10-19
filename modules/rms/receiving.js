@@ -42,6 +42,46 @@ export function applyBatch(i, picked, pickedNa, at, who, whoName) {
   if (ck.every(isIn)) next.completedAt = ck.reduce((m, c) => (c.ok && c.at > m ? c.at : m), ''); else delete next.completedAt;
   return next;
 }
+/* ---------- a period across its transmittals ---------- */
+// Every transmittal (submission) has its own tracking number. What a period still lacks is worked out over all of its
+// transmittals: an account or document counts as in once any transmittal brought it (or it was marked N/A).
+export const periodRecs = (rms, officeId, reportId, period) => rms.items.filter((i) => i.kind !== 'comm' && i.officeId === officeId && i.reportId === reportId && i.period === period && i.status !== 'rejected')
+  .sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt)));
+export function periodChecklist(recs) {
+  if (!recs.length) return [];
+  const blank = (c) => { const { ok: _o, na: _n, at: _a, late: _l, by: _b, byName: _bn, encodedAt: _e, naAt: _na, naBy: _nb, ...rest } = c; return { ...rest, ok: false }; };
+  const out = (recs[recs.length - 1].checklist || []).map(blank), at = new Map(out.map((c, k) => [c.item, k]));
+  recs.forEach((r) => (r.checklist || []).forEach((c) => {
+    if (!at.has(c.item)) { at.set(c.item, out.length); out.push(blank(c)); }
+    const o = out[at.get(c.item)], when = c.at || r.receivedAt;
+    if (c.ok && (!o.ok || when < o.at)) Object.assign(o, { ok: true, at: when, from: numberOf(r) }), delete o.na;
+    else if (c.na && !o.ok) o.na = true;
+  }));
+  return out;
+}
+export function periodState(recs) {
+  const checklist = periodChecklist(recs), done = checklist.length > 0 && checklist.every(isIn);
+  return { recs, checklist, done, verify: recs.some(isVerify), lineLabel: (recs.find((r) => r.lineLabel) || {}).lineLabel,
+    completedAt: done ? checklist.reduce((m, c) => (c.ok && c.at > m ? c.at : m), '') : '' };
+}
+export const periodOf = (rms, i) => periodState(periodRecs(rms, i.officeId, i.reportId, i.period));
+// What one transmittal brought: the accounts (or documents) in it and, per account, the parts still missing for the period.
+export function transmittalHtml(i, agg, { total = true } = {}) {
+  const lbl = ((i.lineLabel || 'account') + 's').toLowerCase();
+  if (isGrouped(i.checklist)) {
+    const mine = linesOf(i.checklist).filter(([, es]) => es.some((e) => e.ok || e.na)).map(([l]) => l);
+    const lacks = (l) => agg.checklist.filter((c) => c.line === l && !isIn(c)).map((c) => c.part);
+    const t = lineTally(agg.checklist);
+    return `<p><b>${mine.length} ${esc(mine.length === 1 ? lbl.slice(0, -1) : lbl)} in this transmittal</b></p>
+      <ul class="rcv-ck">${mine.map((l) => { const m = lacks(l); return `<li class="${m.length ? 'miss' : 'ok'}">${esc(l)}${m.length ? ` <small>— missing ${esc(m.join(', '))}</small>` : ''}</li>`; }).join('')}</ul>
+      ${total ? `<p class="hint">Period total: <b>${t.done.length} of ${t.total} ${esc(lbl)} complete</b> over ${agg.recs.length} transmittal${agg.recs.length > 1 ? 's' : ''}. The Submission Monitor shows what is still missing.</p>` : ''}`;
+  }
+  const got = (i.checklist || []).filter((c) => c.ok || c.na), miss = agg.checklist.filter((c) => !isIn(c));
+  return `<ul class="rcv-ck">${got.map((c) => `<li class="ok">${esc(c.item)}${c.na ? ' <small>(N/A)</small>' : ''}</li>`).join('')}</ul>
+    ${miss.length ? `<span class="legend">Still missing for the period</span><ul class="rcv-ck">${miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('')}</ul>` : '<p class="ok-t">Nothing missing for the period.</p>'}
+    ${total && agg.recs.length > 1 ? `<p class="hint">Over ${agg.recs.length} transmittals.</p>` : ''}`;
+}
+
 // The record already received for an office, report and period (not rejected), if any.
 export const existingFor = (rms, officeId, reportId, period) => rms.items.filter((i) => i.kind !== 'comm' && i.officeId === officeId && i.reportId === reportId && i.period === period && i.status !== 'rejected')
   .sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt)))[0] || null;
@@ -81,7 +121,7 @@ export function statusText(i) {
   if (i.kind === 'comm') return 'Received';
   if (isVerify(i)) return 'For Verification';
   if (i.status === 'rejected') return 'Rejected';
-  if (isAccepted(i)) return missing(i).length ? 'Accepted – with missing documents' : 'Accepted';
+  if (isAccepted(i)) return 'Accepted';
   return i.status || '';
 }
 export function statusPill(i) {
@@ -192,8 +232,9 @@ export function historyOf(i) {
   const grp = isGrouped(ck), lbl = ((i.lineLabel || 'account') + 's').toLowerCase(), inSoFar = new Set(ck.map((c, k) => ((c.ok && !c.late) || c.na ? k : -1)).filter((k) => k >= 0));
   const acct = () => { const rows = linesOf(ck); const d = rows.filter(([, es]) => es.every((e) => inSoFar.has(e.k))).length; return `${d} of ${rows.length} ${lbl} complete`; };
   const n1 = laterNote(i.receivedAt, i.encodedAt, i.receivedByName);
-  ev.push({ at: i.receivedAt, who: n1 ? '' : i.receivedByName, text: grp ? `1st submission · ${acct()} (${have} of ${total} parts)${n1 ? ' (' + n1 + ')' : ''}`
-    : `1st submission · ${have} of ${total} document${total === 1 ? '' : 's'} submitted${have === total ? ' · all submitted' : ''}${n1 ? ' (' + n1 + ')' : ''}` });
+  const nLines = grp ? linesOf(ck).filter(([, es]) => es.some((e) => e.ok && !e.late)).length : 0;
+  ev.push({ at: i.receivedAt, who: n1 ? '' : i.receivedByName, text: grp ? `Received · ${nLines} ${nLines === 1 ? lbl.slice(0, -1) : lbl} in this transmittal${n1 ? ' (' + n1 + ')' : ''}`
+    : `Received · ${have} document${have === 1 ? '' : 's'}${n1 ? ' (' + n1 + ')' : ''}` });
   const late = {};
   ck.forEach((c, k) => { if (c.ok && c.late) (late[c.at] = late[c.at] || []).push({ ...c, k }); });
   Object.keys(late).sort().forEach((at, k) => {
@@ -231,8 +272,17 @@ export function receivingHtml(refs, rms, q) {
   // Most recently entered first (an earlier submission encoded today shows at the top).
   const recent = mine.filter(inGroup).sort((a, b) => String(b.encodedAt || b.receivedAt).localeCompare(String(a.encodedAt || a.receivedAt))).slice(0, 30);
   const verify = canDecide(refs) ? rms.items.filter((i) => offIds.has(i.officeId) && isVerify(i) && inGroup(i)) : [];
-  const lacking = rms.items.filter((i) => offIds.has(i.officeId) && lacksDocs(i) && !isVerify(i) && inGroup(i));
-  const dups = canCombine(refs) ? duplicateGroups(rms, offIds) : [];
+  // Periods still incomplete over all their transmittals (one row per office, report and period).
+  const seen = new Set(), lacking = [];
+  rms.items.filter((i) => i.kind !== 'comm' && offIds.has(i.officeId) && i.status !== 'rejected' && inGroup(i)).forEach((i) => {
+    const k = `${i.officeId}|${i.reportId}|${i.period}`; if (seen.has(k)) return; seen.add(k);
+    const agg = periodOf(rms, i); if (!agg.done) lacking.push({ k, i: agg.recs[agg.recs.length - 1], agg });
+  });
+  lacking.sort((a, b) => String(b.i.period).localeCompare(String(a.i.period)));
+  const doneTxt = (agg) => { if (isGrouped(agg.checklist)) { const t = lineTally(agg.checklist); return `${t.done.length} of ${t.total} ${esc(((agg.lineLabel || 'account') + 's').toLowerCase())} complete`; }
+    return `${agg.checklist.filter(isIn).length} of ${agg.checklist.length} submitted`; };
+  const inTx = (i) => { if (isGrouped(i.checklist)) { const n = linesOf(i.checklist).filter(([, es]) => es.some((e) => e.ok || e.na)).length; return `${n} ${esc(((i.lineLabel || 'account') + (n === 1 ? '' : 's')).toLowerCase())} in this transmittal`; }
+    return `${(i.checklist || []).filter((c) => c.ok).length} document(s) in this transmittal`; };
   const off = (id) => offs.find((o) => o.id === id);
   const rep = (id) => rms.reports.find((r) => r.id === id);
   const what = (i) => i.kind === 'comm' ? 'Communication · ' + esc(i.subject || '') : esc((rep(i.reportId)?.code || '') + ' · ' + periodLabel(i.period));
@@ -248,18 +298,16 @@ export function receivingHtml(refs, rms, q) {
     ${verify.length ? `<section class="panel"><div class="panel-head"><h2>For Verification · ${verify.length}</h2></div>
       <div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Report</span><span>Received</span><span>Documents</span><span></span></div>
       ${verify.map((i) => { const m = missing(i), n = (i.checklist || []).length; return `<div class="t-row" style="${cols}"><span class="mono"><b>${esc(numberOf(i))}</b></span><span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span>
-        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${isGrouped(i.checklist) ? (() => { const t = lineTally(i.checklist); return `${t.done.length} of ${t.total} ${esc(((i.lineLabel || 'account') + 's').toLowerCase())} complete${t.part.length ? `<br>${t.part.length} missing parts` : ''}${t.none.length ? `<br>${t.none.length} not submitted` : ''}`; })() : `${n - m.length} of ${n} submitted`}${isGrouped(i.checklist) ? '' : m.length ? '<br>Missing: ' + (m.length > 3 ? m.slice(0, 3).map((c) => esc(c.item)).join('; ') + `; and ${m.length - 3} more` : m.map((c) => esc(c.item)).join('; ')) : ''}</small></span>
+        <span><small>${esc(fmtDT(i.receivedAt))}</small></span><span><small>${inTx(i)}<br>Period: ${doneTxt(periodOf(rms, i))}</small></span>
         <span class="acts"><button class="btn sm primary" data-decide="${i.id}">Accept / Reject</button><button class="btn sm" data-view="${i.id}">View</button></span></div>`; }).join('')}</section>` : ''}
-    ${dups.length ? `<section class="panel"><div class="panel-head"><h2>Same Period Received More Than Once · ${dups.length}</h2></div>
-      <div class="note">Each of these was received as separate records. Combine them into one record (the earliest keeps its tracking number); the others are removed and noted in its history.</div>
-      ${dups.map((d) => { const f = d.list[0]; return `<div class="t-row" style="${cols}"><span class="mono">${d.list.map((i) => `<b>${esc(numberOf(i))}</b>`).join('<br>')}</span>
-        <span>${esc(off(f.officeId)?.label || '')}<br><small>${what(f)}</small></span><span><small>${d.list.map((i) => esc(fmtDate(i.receivedAt))).join('<br>')}</small></span><span><small>${d.list.length} records</small></span>
-        <span class="acts"><button class="btn sm primary" data-combine="${esc(d.key)}">Combine</button></span></div>`; }).join('')}</section>` : ''}
-    ${lacking.length ? `<section class="panel"><div class="panel-head"><h2>Accepted, Still Missing Documents · ${lacking.length}</h2></div>
-      ${lacking.map((i) => row(i, `<button class="btn sm" data-late="${i.id}">Add Late Documents</button><button class="btn sm" data-view="${i.id}">View</button>`)).join('')}</section>` : ''}
+    ${lacking.length ? `<section class="panel"><div class="panel-head"><h2>Periods Still Incomplete · ${lacking.length}</h2></div>
+      <div class="t-head" style="${cols}"><span>Transmittals</span><span>Office · Report</span><span>Last received</span><span>Period total</span><span></span></div>
+      ${lacking.map(({ k, i, agg }) => `<div class="t-row" style="${cols}"><span class="mono">${agg.recs.map((r) => `<b>${esc(numberOf(r))}</b>`).join('<br>')}</span>
+        <span>${esc(off(i.officeId)?.label || '')}<br><small>${what(i)}</small></span><span><small>${esc(fmtDate(i.receivedAt))}</small></span><span><small>${doneTxt(agg)}</small></span>
+        <span class="acts"><button class="btn sm primary" data-next="${esc(k)}">Receive Next Transmittal</button></span></div>`).join('')}</section>` : ''}
     <section class="panel"><div class="panel-head"><h2>${jo ? 'Received by You' : 'Recently Received'}</h2></div>
       ${recent.length ? `<div class="t-head" style="${cols}"><span>Tracking No.</span><span>Office · Item</span><span>Received</span><span>Status</span><span></span></div>
-        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${lacksDocs(i) ? `<button class="btn sm" data-late="${i.id}">Late Docs</button>` : ''}${canCorrect(refs) && !i._new ? `<button class="btn sm" data-fix="${i.id}">Correct</button>` : ''}`)).join('')}`
+        ${recent.map((i) => row(i, `<button class="btn sm" data-view="${i.id}">View</button>${i._new ? '' : `<button class="btn sm" data-slip="${i.id}">Slip</button>`}${canCorrect(refs) && !i._new ? `<button class="btn sm" data-fix="${i.id}">Correct</button>` : ''}`)).join('')}`
         : `<div class="empty"><b>${g === 'all' ? 'Nothing received yet' : 'Nothing received in this group'}</b>${g === 'all' ? 'Use + Receive Documents to record the first submission.' : 'Choose All groups to see everything.'}</div>`}</section>`;
 }
 
@@ -267,16 +315,15 @@ export function wireReceiving(refs, rms, q, rerender) {
   $('#rcv-new').onclick = () => receiveForm(refs, rms);
   const gs = $('#rcv-g'); if (gs) gs.onchange = () => { location.hash = '#/rms/receiving' + (gs.value === 'all' ? '' : '?g=' + encodeURIComponent(gs.value)); };
   $$('[data-decide]').forEach((b) => { b.onclick = () => decide(refs, rms, b.dataset.decide); });
-  $$('[data-late]').forEach((b) => { b.onclick = () => addLate(refs, rms, b.dataset.late); });
+  $$('[data-next]').forEach((b) => { const [officeId, reportId, period] = b.dataset.next.split('|'); b.onclick = () => receiveForm(refs, rms, { officeId, reportId, period }); });
   $$('[data-view]').forEach((b) => { b.onclick = () => viewItem(refs, rms, b.dataset.view); });
   $$('[data-fix]').forEach((b) => { b.onclick = () => correctItem(refs, rms, b.dataset.fix); });
-  $$('[data-combine]').forEach((b) => { b.onclick = () => combineItems(refs, rms, b.dataset.combine); });
   $$('[data-slip]').forEach((b) => { b.onclick = () => printSlip(refs, rms, rms.items.find((i) => i.id === b.dataset.slip)); });
   if (q.get('new') === '1') { history.replaceState(null, '', '#/rms/receiving'); receiveForm(refs, rms); }
 }
 
 /* ---------- receive form ---------- */
-async function receiveForm(refs, rms) {
+async function receiveForm(refs, rms, preset = null) {
   const scopes = scopesFor(refs);
   const offs = visibleOffices(refs, rms, scopes.map((s) => s.id));
   const label = (s) => s.data.kind === 'province' ? 'Province of Quirino' : s.data.name;
@@ -356,22 +403,26 @@ async function receiveForm(refs, rms) {
       };
       // The same office, report and period already received: this batch is added to that record (same tracking number),
       // and only what is still missing is listed.
+      // The same office, report and period already received: this transmittal gets its own new tracking number, and
+      // only what earlier transmittals have not yet brought is listed.
       const fillList = () => {
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value), o = office(), p = $('#f-per', bg).value;
         if (!r || !o) return;
-        ex = p ? existingFor(rms, o.id, r.id, p) : null;
+        const recs = p ? periodRecs(rms, o.id, r.id, p) : [];
+        ex = recs.length ? periodState(recs) : null;
         const box = $('#f-exist', bg);
         if (ex) {
-          const t = isGrouped(ex.checklist) ? lineTally(ex.checklist) : null, m = missing(ex).length;
-          box.innerHTML = `<b>${esc(periodLabel(p))} ${esc(r.code)} was already received: <span class="mono">${esc(numberOf(ex))}</span></b> (first ${esc(fmtDate(ex.receivedAt))})<br>
-            ${t ? `${t.done.length} of ${t.total} ${esc(((ex.lineLabel || 'account') + 's').toLowerCase())} complete so far.` : `${(ex.checklist || []).length - m} of ${(ex.checklist || []).length} submitted so far.`}
-            What you tick now is <b>added to that record</b> as its next submission, with the date received below. Only what is still missing is listed.`;
+          const t = isGrouped(ex.checklist) ? lineTally(ex.checklist) : null, n = ex.checklist.filter(isIn).length;
+          box.innerHTML = `<b>${esc(periodLabel(p))} ${esc(r.code)} already received in ${recs.length} transmittal${recs.length > 1 ? 's' : ''}:</b> <span class="mono">${recs.map((x) => esc(numberOf(x))).join(', ')}</span><br>
+            ${t ? `${t.done.length} of ${t.total} ${esc(((ex.lineLabel || 'account') + 's').toLowerCase())} complete so far.` : `${n} of ${ex.checklist.length} submitted so far.`}
+            This transmittal gets its <b>own new tracking number</b>. Only what is still missing is listed.`;
         }
         box.hidden = !ex;
-        const ents = ex ? ex.checklist : entriesFor(r, o), items = ents.map((e) => e.item);
-        if (ex && !missing(ex).length) { $('#f-list', bg).innerHTML = '<p class="ok-t">Everything for this period is already in. Nothing to add.</p>'; dueHint(); state(); decState(); return; }
-        if (isGrouped(ents)) return groupedList(r, o, ents);
-        const show = ents.map((e, k) => ({ e, k })).filter(({ e }) => !ex || !isIn(e));
+        const prev = new Set(ex ? ex.checklist.filter(isIn).map((c) => c.item) : []);
+        const ents = entriesFor(r, o), items = ents.map((e) => e.item);
+        if (ex && ex.done) { $('#f-list', bg).innerHTML = '<p class="ok-t">Everything for this period is already in. Nothing to receive.</p>'; dueHint(); state(); decState(); return; }
+        if (isGrouped(ents)) return groupedList(r, o, ents, prev);
+        const show = ents.map((e, k) => ({ e, k })).filter(({ e }) => !prev.has(e.item));
         const many = show.length > LONG;
         $('#f-list', bg).innerHTML = (r.perOffice && !(o.lists && (o.lists[r.id] || []).length)
           ? `<p class="warn-t">No ${esc((r.lineLabel || 'line').toLowerCase())}s are listed for this office yet. Add them in Office Setup (${esc(r.code)}).</p>` : '')
@@ -386,17 +437,18 @@ async function receiveForm(refs, rms) {
         dueHint(); state(); decState();
       };
       // Reports with parts per line (e.g. BRS per bank account): 1) select the accounts that came in, 2) each opens to its parts.
-      const groupedList = (r, o, ents) => {
-        // With an existing record: accounts already complete are left out; the others show only their missing parts.
-        const lines = linesOf(ents).filter(([, es]) => !ex || !es.every(isIn)).map(([l]) => l), lbl = (r.lineLabel || 'Line').toLowerCase(), many = lines.length > 8;
-        const other = ents.map((e, k) => ({ ...e, k })).filter((e) => !(e.line && e.part) && (!ex || !isIn(e)));
+      const groupedList = (r, o, ents, prev) => {
+        // After earlier transmittals: accounts already complete are left out; the others show only their missing parts.
+        const view = ents.map((e) => ({ ...e, ok: prev.has(e.item), na: false }));
+        const lines = linesOf(view).filter(([, es]) => !es.every((e) => e.ok)).map(([l]) => l), lbl = (r.lineLabel || 'Line').toLowerCase(), many = lines.length > 8;
+        const other = view.map((e, k) => ({ ...e, k })).filter((e) => !(e.line && e.part) && !e.ok);
         $('#f-list', bg).innerHTML = `<small>Each ${esc(lbl)} includes: ${esc(r.checklist.join(', '))}</small>
           <span class="legend">1. Select the ${esc(lbl)}s that came in${ex ? ` (${lines.length} still incomplete)` : ''}</span>
           ${many ? `<input class="input" id="f-find" placeholder="Search ${lines.length} ${esc(lbl)}s">` : ''}
           <div class="rcv-items acct-pick${many ? ' long' : ''}">${lines.map((l, li) => `<label data-t="${esc(l.toLowerCase())}"><input type="checkbox" name="acct" value="${li}"> ${esc(l)}</label>`).join('')}</div>
           <div class="btn-row"><button type="button" class="btn sm" id="f-sel-all">Select all</button><button type="button" class="btn sm" id="f-sel-none">Clear</button></div>
           <span class="legend">2. Tick the parts submitted for each ${esc(lbl)}</span>
-          <div id="f-acc">${accordionHtml(ex ? ents : ents.map((e) => ({ ...e, ok: false })), { name: 'ck', hideAll: true, onlyMissing: !!ex, checked: () => false, naChecked: () => false })}<p class="hint" id="f-acc-none">Select a ${esc(lbl)} above.</p></div>
+          <div id="f-acc">${accordionHtml(view, { name: 'ck', hideAll: true, onlyMissing: true, checked: () => false, naChecked: () => false })}<p class="hint" id="f-acc-none">Select a ${esc(lbl)} above.</p></div>
           ${other.length ? `<span class="legend">Also required</span><div class="rcv-items">${other.map((e) => `<label><input type="checkbox" name="ck" value="${e.k}"> ${esc(e.item)}</label>`).join('')}</div>` : ''}`;
         const accs = $$('details.acc', bg);
         const pick = () => {
@@ -404,7 +456,7 @@ async function receiveForm(refs, rms) {
           accs.forEach((d) => { const show = on.has(d.dataset.line); if (!show) { $$('input[name=ck], input[name=ck-na]', d).forEach((x) => { x.checked = false; }); d.open = false; } d.hidden = !show; });
           $('#f-acc-none', bg).hidden = on.size > 0; updAcc(); state();
         };
-        const updAcc = wireAccordions(bg, 'ck', () => state(), (d) => (ex ? ex.checklist.filter((c) => c.line === d.dataset.line && isIn(c)).length : 0));
+        const updAcc = wireAccordions(bg, 'ck', () => state(), (d) => view.filter((c) => c.line === d.dataset.line && c.ok).length);
         $$('input[name=acct]', bg).forEach((x) => { x.onchange = () => { pick(); const d = accs.find((a) => a.dataset.line === lines[+x.value]); if (x.checked && d) d.open = true; }; });
         $('#f-sel-all', bg).onclick = () => { $$('input[name=acct]', bg).forEach((x) => { if (!x.closest('label').hidden) x.checked = true; }); pick(); };
         $('#f-sel-none', bg).onclick = () => { $$('input[name=acct]', bg).forEach((x) => { x.checked = false; }); pick(); };
@@ -432,7 +484,6 @@ async function receiveForm(refs, rms) {
       };
       // The decision at receipt: JO and OSA Staff always For Verification; auditors choose, except for bulk reports.
       const decState = () => {
-        $('#f-dec', bg).hidden = !!ex;   // adding to an existing record keeps its status
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
         const bulk = !!(r && r.bulk);
         $$('input[name=rdec]', bg).forEach((x) => { x.closest('.rcv-type').hidden = bulk; });
@@ -493,6 +544,13 @@ async function receiveForm(refs, rms) {
       $('#f-pdf', bg).onchange = () => { const f = $('#f-pdf', bg).files[0]; if (!f) return; pdfFile = f; $('#f-pdf', bg).value = ''; applyPdf(false); };
       $('#f-ocr', bg).onclick = () => { if (pdfFile) applyPdf(true); };
       fillOffices(); kindState();
+      // Receive Next Transmittal: office, report and period filled in.
+      if (preset) {
+        const o = offs.find((x) => x.id === preset.officeId);
+        if (o) { $('#f-mun', bg).value = o.munId; fillOffices(); $('#f-off', bg).value = o.id; fillReports(); $('#f-rep', bg).value = preset.reportId; fillPeriods();
+          if (![...$('#f-per', bg).options].some((x) => x.value === preset.period)) $('#f-per', bg).insertAdjacentHTML('afterbegin', `<option value="${esc(preset.period)}">${esc(periodLabel(preset.period))}</option>`);
+          $('#f-per', bg).value = preset.period; fillList(); }
+      }
     },
     buttons: [{ label: 'Cancel', value: null }, { label: 'Save and Get Number', cls: 'primary', value: 'save', check: (bg) => {
       const kind = $('input[name=kind]:checked', bg).value;
@@ -510,17 +568,13 @@ async function receiveForm(refs, rms) {
         const r = rms.reports.find((x) => x.id === $('#f-rep', bg).value);
         if (!r) { toast('This office has no report ticked. Tick its reports in Office Setup first.', 'bad'); return false; }
         const period = $('#f-per', bg).value;
-        const ents = ex ? ex.checklist : entriesFor(r, o);
+        const ents = entriesFor(r, o);
         if (!ents.length) { toast(`No ${(r.lineLabel || 'line').toLowerCase()}s are listed for this office yet. Add them in Office Setup.`, 'bad'); return false; }
         const ticked = new Set($$('input[name=ck]:checked', bg).map((x) => +x.value));
         const naSet = new Set($$('input[name=ck-na]:checked', bg).map((x) => +x.value));
-        if (!ticked.size && !(ex && naSet.size)) { toast(ex && !missing(ex).length ? 'Everything for this period is already in.' : 'Tick at least one document received.', 'bad'); return false; }
+        if (!ticked.size && !naSet.size) { toast(ex && ex.done ? 'Everything for this period is already in.' : 'Tick at least one document received.', 'bad'); return false; }
         const bare = $$('details.acc', bg).find((d) => !d.hidden && !$$('input[name=ck], input[name=ck-na]', d).some((x) => x.checked));
         if (bare) { toast(`Tick the parts submitted for ${bare.dataset.line}, or unselect it.`, 'bad'); bare.open = true; return false; }
-        if (ex) {   // added to the record already received for this period
-          out = { addTo: ex, next: applyBatch(ex, [...ticked], [...naSet].filter((k) => !ticked.has(k)), when.iso, by(refs), myName(refs)) };
-          return true;
-        }
         const at = base.receivedAt;
         const checklist = ents.map((e, k) => ({ ...e, ok: ticked.has(k), at: ticked.has(k) ? at : '', ...(naSet.has(k) && !ticked.has(k) ? { na: true } : {}) }));
         const allIn = checklist.every(isIn);
@@ -595,7 +649,7 @@ async function decide(refs, rms, id) {
   const res = await modal({
     title: 'Accept or Reject · ' + numberOf(i),
     body: `<p><b>${esc(off?.label || '')}</b> · ${esc(i.reportCode + ' · ' + periodLabel(i.period))}<br><small>Received ${esc(fmtDT(i.receivedAt))} by ${esc(i.receivedByName)} · received from ${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</small></p>
-      <div><span class="legend">Checklist · ${i.checklist.filter((c) => c.ok).length} of ${i.checklist.length} submitted</span>${checklistHtml(i)}</div>
+      <div><span class="legend">This transmittal</span>${transmittalHtml(i, periodOf(rms, i))}</div>
       <div class="rcv-type"><label><input type="radio" name="dec" value="accept" checked> Accept${missing(i).length ? ' – missing documents to follow' : ''}</label><label><input type="radio" name="dec" value="reject"> Reject – return to the submitter</label></div>
       <div class="field"><label for="d-rem">Remarks <span id="d-req" hidden>(required for a rejection)</span></label><input class="input" id="d-rem" placeholder="e.g. Accepted; DVs to follow within 5 days"></div>`,
     onOpen: (bg) => { $$('input[name=dec]', bg).forEach((x) => { x.onchange = () => { $('#d-req', bg).hidden = x.value !== 'reject' || !x.checked; }; }); },
@@ -676,7 +730,7 @@ async function viewItem(refs, rms, id) {
       + (encodedLater(i) ? `<br><small>Encoded later: ${esc(fmtDT(i.encodedAt))}</small>` : ''))}
     ${row('Received from', esc(i.submittedBy) + (i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''))}
     ${i.pendingCode && i.trackingNo ? row('Pending code', `<span class="mono">${esc(i.pendingCode)}</span>`) : ''}
-    ${i.checklist ? row('Checklist', checklistHtml(i)) : ''}
+    ${i.checklist ? row('This transmittal', transmittalHtml(i, periodOf({ ...rms, items: [...rms.items.filter((x) => x.id !== i.id), i] }, i))) : ''}
     ${row('History', historyHtml(i))}
     ${i.remarks ? row('Remarks', esc(i.remarks)) : ''}`,
     buttons: [{ label: 'Close', value: null, cls: canCorrect(refs) && !i._new ? '' : 'primary' }, ...(canCorrect(refs) && !i._new ? [{ label: 'Correct', cls: 'primary', value: 'fix' }] : [])] })
@@ -824,7 +878,9 @@ export function printSlip(refs, rms, i) {
   const team = refs.team[i.teamId]?.data;
   const teamLine = team ? (team.officeCode ? 'Audit Team ' + team.officeCode : team.name) + ' · Province of Quirino' : 'Province of Quirino';
   const rep = rms.reports.find((r) => r.id === i.reportId);
-  const okList = (i.checklist || []).filter((c) => c.ok), miss = (i.checklist || []).filter((c) => !c.ok);
+  const okList = (i.checklist || []).filter((c) => c.ok);
+  // What the whole period still lacks, over all its transmittals (this one included even if not yet in the list).
+  const agg = i.kind === 'comm' ? null : periodOf({ ...rms, items: [...rms.items.filter((x) => x.id !== i.id), i] }, i), aggMiss = agg ? agg.checklist.filter((c) => !isIn(c)) : [];
   const pend = !i.trackingNo, ver = isVerify(i);
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(numberOf(i))}</title><style>
     @page{size:letter; margin:0.4in} body{margin:0; font-family:Arial,Helvetica,sans-serif; color:#111}
@@ -847,20 +903,15 @@ export function printSlip(refs, rms, i) {
       <span>Received</span><span>${esc(new Date(i.receivedAt).toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span>
       <span>Received from</span><span>${esc(i.submittedBy)}${i.submittedDesignation ? ', ' + esc(i.submittedDesignation) : ''}</span></div>
     ${i.kind === 'report' ? `${isGrouped(i.checklist) ? (() => {
-      // Per account: complete count, accounts lacking parts (with the parts), accounts not submitted.
-      const t = lineTally(i.checklist), lbl = ((i.lineLabel || 'account') + 's').toLowerCase(), lacks = (es) => es.filter((e) => !isIn(e)).map((e) => e.part).join(', ');
-      const lateN = i.checklist.filter((c) => c.ok && c.late).length;
-      return `<div class="sec">SUBMITTED</div><ul><li class="ok">${t.done.length} of ${t.total} ${esc(lbl)} complete${lateN ? ` (${lateN} late part${lateN > 1 ? 's' : ''})` : ''}</li></ul>
-        ${t.part.length ? `<div class="sec">MISSING PARTS · ${t.part.length}</div><ul>${t.part.map(([l, es]) => `<li class="miss">${esc(l)} — no ${esc(lacks(es))}</li>`).join('')}</ul>` : ''}
-        ${t.none.length ? `<div class="sec">NOT SUBMITTED · ${t.none.length}</div><ul class="${t.none.length > 14 ? 'cols' : ''}">${t.none.map(([l]) => `<li class="miss">${esc(l)}</li>`).join('')}</ul>` : ''}
-        ${!t.part.length && !t.none.length ? '<div class="sec">MISSING</div><ul><li>None</li></ul>' : ''}`; })() : i.checklist.length > LONG
-      // Long lists (e.g. 75 bank accounts): the count submitted, and the missing ones (the full list is in the app).
-      ? `<div class="sec">SUBMITTED</div><ul><li class="ok">${okList.length} of ${i.checklist.length}${rep?.lineLabel ? ' ' + esc(rep.lineLabel.toLowerCase()) + 's' : ''}${okList.some((c) => c.late) ? ` (${okList.filter((c) => c.late).length} late)` : ''}</li></ul>
-        <div class="sec">MISSING · ${miss.length}</div><ul class="${miss.length > 14 ? 'cols' : ''}">${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>`
-      : `<div class="sec">SUBMITTED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}${c.late ? ' (' + esc(fmtDate(c.at)) + ')' : ''}</li>`).join('')}</ul>
-      <div class="sec">MISSING</div><ul>${miss.length ? miss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>`}
-      ${ver ? `<div class="note">Received subject to verification by the Auditor.${miss.length ? ' Please submit the missing documents, quoting this tracking number.' : ''}</div>`
-        : miss.length && i.status !== 'rejected' ? `<div class="note">Please submit the missing documents, quoting this tracking number.</div>` : ''}
+      // This transmittal only: the accounts it brought and, per account, the parts still missing. (The Submission Monitor
+      // shows the accounts not yet submitted at all.)
+      const mine = linesOf(i.checklist).filter(([, es]) => es.some((e) => e.ok || e.na)).map(([l]) => l), lbl = ((i.lineLabel || 'account') + (mine.length === 1 ? '' : 's')).toLowerCase();
+      const lacks = (l) => agg.checklist.filter((c) => c.line === l && !isIn(c)).map((c) => c.part);
+      return `<div class="sec">SUBMITTED · ${mine.length} ${esc(lbl)}</div><ul class="${mine.length > 14 ? 'cols' : ''}">${mine.map((l) => { const m = lacks(l); return `<li class="${m.length ? 'miss' : 'ok'}">${esc(l)}${m.length ? ` — missing ${esc(m.join(', '))}` : ''}</li>`; }).join('')}</ul>`; })()
+      : `<div class="sec">SUBMITTED</div><ul>${okList.map((c) => `<li class="ok">${esc(c.item)}</li>`).join('')}</ul>
+      <div class="sec">MISSING</div><ul>${aggMiss.length ? aggMiss.map((c) => `<li class="miss">${esc(c.item)}</li>`).join('') : '<li>None</li>'}</ul>`}
+      ${ver ? `<div class="note">Received subject to verification by the Auditor.${aggMiss.length ? ' Please submit the missing documents.' : ''}</div>`
+        : aggMiss.length && i.status !== 'rejected' ? `<div class="note">Please submit the missing documents.</div>` : ''}
       ${i.status === 'rejected' && i.decision?.remarks ? `<div class="note">Rejected: ${esc(i.decision.remarks)}</div>` : ''}` : ''}
     <div class="foot"><span>Status: <b>${esc(statusText(i))}</b></span><div class="sig"><b>${esc(i.receivedByName)}</b><br>Received by</div></div>
     </div><script>window.onload=()=>{window.focus();window.print();}<\/script></body></html>`;
